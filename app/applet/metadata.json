@@ -1,0 +1,6 @@
+{
+  "name": "CarVideo USB Studio",
+  "description": "Preparador y exportador de videos musicales MP4 HD para memorias USB y pantallas de autos con simulador de infoentretenimiento y verificación de licencias.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
