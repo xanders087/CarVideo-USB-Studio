@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { ShieldCheck, Scale, ExternalLink, BookOpen, Car, X } from 'lucide-react';
+import { useModalDialog } from '../utils/mediaHelpers';
 
 interface LegalRightsModalProps {
   isOpen: boolean;
@@ -7,16 +8,29 @@ interface LegalRightsModalProps {
 }
 
 export const LegalRightsModal: React.FC<LegalRightsModalProps> = ({ isOpen, onClose }) => {
+  const panelRef = useRef<HTMLDivElement>(null);
+  useModalDialog(isOpen, onClose, panelRef);
+
   if (!isOpen) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
-      onClick={onClose}
+    <dialog
+      open
+      aria-modal="true"
+      aria-labelledby="legal-rights-modal-title"
+      className="fixed inset-0 z-50 m-0 h-full w-full max-h-none max-w-none bg-transparent border-0 p-4 flex items-center justify-center"
     >
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label="Cerrar Marco Legal"
+        onClick={onClose}
+        className="fixed inset-0 w-full h-full bg-slate-950/80 backdrop-blur-sm border-0 p-0 cursor-default"
+      />
       <div
-        className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative z-10 bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl focus:outline-none"
       >
         <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -24,7 +38,10 @@ export const LegalRightsModal: React.FC<LegalRightsModalProps> = ({ isOpen, onCl
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-bold text-white font-display">
+              <h2
+                id="legal-rights-modal-title"
+                className="text-base sm:text-lg font-bold text-white font-display"
+              >
                 Marco Legal y Copia Privada
               </h2>
               <p className="text-xs text-slate-400">
@@ -113,6 +130,6 @@ export const LegalRightsModal: React.FC<LegalRightsModalProps> = ({ isOpen, onCl
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };

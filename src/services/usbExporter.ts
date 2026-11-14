@@ -28,7 +28,15 @@ export function formatSafeVideoFilename(
   const prefix = withPrefix ? `${String(index + 1).padStart(2, '0')} - ` : '';
   const artist = sanitize ? sanitizeCarFilename(item.artist) : item.artist;
   const title = sanitize ? sanitizeCarFilename(item.title) : item.title;
-  return `${prefix}${artist} - ${title} (${item.resolution}).mp4`;
+  const resTag =
+    item.resolution && item.resolution !== 'Sin verificar' ? ` (${item.resolution})` : '';
+  return `${prefix}${artist} - ${title}${resTag}.mp4`;
+}
+
+export function getSortedGenres(items: CarVideoItem[]): string[] {
+  return Array.from(new Set(items.map((i) => i.genre))).sort((a, b) =>
+    a.localeCompare(b, 'es')
+  );
 }
 
 /**
@@ -53,9 +61,8 @@ export function generateM3uContent(
       settings.addTrackNumberPrefix,
       settings.cleanFilenamesForStereos
     );
-    lines.push(`#EXTINF:${item.durationSeconds},${item.artist} - ${item.title}`);
-    lines.push(filename);
-    lines.push('');
+    const extDuration = item.durationSeconds > 0 ? item.durationSeconds : -1;
+    lines.push(`#EXTINF:${extDuration},${item.artist} - ${item.title}`, filename, '');
   });
 
   return lines.join('\r\n');
@@ -85,7 +92,7 @@ export function buildUsbVirtualTree(
   };
 
   if (settings.organizationMode === 'by-genre') {
-    const genres = Array.from(new Set(items.map((i) => i.genre))).sort();
+    const genres = getSortedGenres(items);
 
     genres.forEach((genre) => {
       const genreItems = items.filter((i) => i.genre === genre);
@@ -208,13 +215,14 @@ export function checkStereoCompatibility(
 /**
  * Triggers direct browser download for an individual MP4 video file.
  */
-export async function downloadSingleVideo(
+export function downloadSingleVideo(
   item: CarVideoItem,
   index = 0
-): Promise<void> {
-  const filename = formatSafeVideoFilename(index, item, false, true);
-  const streamUrl = item.videoStreamUrl || '/videos/test.mp4';
+): void {
+  const streamUrl = item.videoStreamUrl;
+  if (!streamUrl) return;
 
+  const filename = formatSafeVideoFilename(index, item, false, true);
   const a = document.createElement('a');
   if (streamUrl.startsWith('blob:')) {
     a.href = streamUrl;
@@ -231,43 +239,53 @@ export async function downloadSingleVideo(
 
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
+  a.remove();
 }
 
-async function getPlayableVideoBlob(videoStreamUrl: string): Promise<Blob | null> {
+async function getPlayableVideoBlob(
+  videoStreamUrl: string
+): Promise<{ blob: Blob | null; reason?: string }> {
+  if (!videoStreamUrl) {
+    return { blob: null, reason: 'URL de video no disponible' };
+  }
+
   try {
     const resp = await fetch(videoStreamUrl);
-    if (resp.ok) {
-      return await resp.blob();
+    if (!resp.ok) {
+      return { blob: null, reason: `HTTP ${resp.status}` };
     }
-  } catch {
-    // Fallback below
-  }
-
-  try {
-    const fallbackResp = await fetch('/videos/test.mp4');
-    if (fallbackResp.ok) {
-      return await fallbackResp.blob();
+    const contentType = resp.headers?.get?.('content-type')?.toLowerCase() || '';
+    if (contentType.includes('text/html')) {
+      return { blob: null, reason: 'Respuesta HTML inesperada en lugar de video MP4' };
     }
-  } catch {
-    // No fallback available
+    const blob = await resp.blob();
+    if (blob.size === 0) {
+      return { blob: null, reason: 'Archivo vacío (0 bytes)' };
+    }
+    return { blob };
+  } catch (err) {
+    const reason = err instanceof Error && err.message ? err.message : 'Error de red o bloqueo CORS';
+    return { blob: null, reason };
   }
-
-  return null;
 }
 
-/**
- * Bundles the USB folder structure into a single ZIP archive.
- */
-export async function createUsbZipArchive(
-  items: CarVideoItem[],
-  settings: UsbExportSettings,
-  onProgress?: (progressPercent: number, currentAction: string) => void
-): Promise<Blob> {
-  const zip = new JSZip();
-  onProgress?.(5, 'Preparando estructura de carpetas...');
+export interface UsbZipFailedItem {
+  title: string;
+  filename: string;
+  reason: string;
+}
 
-  const instructions = [
+export interface UsbZipArchiveResult {
+  blob: Blob;
+  includedCount: number;
+  failedItems: UsbZipFailedItem[];
+}
+
+function buildUsbInstructionsText(
+  includedItems: CarVideoItem[],
+  failedItems: UsbZipFailedItem[]
+): string {
+  const lines = [
     '===========================================================',
     'CARVIDEO USB STUDIO - GUIA PARA PANTALLAS DE VEHICULOS',
     '===========================================================',
@@ -276,61 +294,88 @@ export async function createUsbZipArchive(
     '2. Conecta la USB al puerto multimedia del vehiculo.',
     '3. Selecciona la fuente USB / Video en la pantalla del auto.',
     '',
-    'CONTENIDO INCLUIDO:',
-    ...items.map(
+    `CONTENIDO INCLUIDO (${includedItems.length}):`,
+    ...includedItems.map(
       (i) =>
         ` - "${i.title}" (${i.artist}) · ${i.license.type} · ${i.license.attribution}`
     ),
-  ].join('\r\n');
+  ];
 
-  zip.file('LEEME_INSTRUCCIONES_COCHE.txt', instructions);
+  if (failedItems.length > 0) {
+    lines.push(
+      '',
+      `VIDEOS NO INCLUIDOS POR ERROR DE DESCARGA (${failedItems.length}):`,
+      'Estos videos no se pudieron descargar directamente en el ZIP (por bloqueo CORS o enlace caido). Descargalos manualmente o importalos desde tu PC:',
+      ...failedItems.map((f) => ` - "${f.title}" (${f.filename}) · Motivo: ${f.reason}`)
+    );
+  }
 
+  return lines.join('\r\n');
+}
+
+/**
+ * Bundles the USB folder structure into a single ZIP archive without silent test.mp4 fallbacks.
+ */
+export async function createUsbZipArchive(
+  items: CarVideoItem[],
+  settings: UsbExportSettings,
+  onProgress?: (progressPercent: number, currentAction: string) => void
+): Promise<UsbZipArchiveResult> {
+  const zip = new JSZip();
+  onProgress?.(5, 'Preparando estructura de carpetas...');
+
+  const includedItems: CarVideoItem[] = [];
+  const failedItems: UsbZipFailedItem[] = [];
   let processedCount = 0;
   const total = Math.max(1, items.length);
 
   if (settings.organizationMode === 'by-genre') {
-    const genres = Array.from(new Set(items.map((i) => i.genre)));
+    const genres = getSortedGenres(items);
 
     for (const genre of genres) {
       const genreItems = items.filter((i) => i.genre === genre);
       const safeGenreFolder = sanitizeCarFilename(genre);
-      const folder = zip.folder(safeGenreFolder);
+      const genreIncluded: CarVideoItem[] = [];
+      let folder: JSZip | null = null;
 
-      if (folder) {
-        if (settings.generateM3uPlaylists) {
-          folder.file(
-            `${safeGenreFolder}_Lista.m3u`,
-            generateM3uContent(genre, genreItems, settings)
-          );
+      for (let idx = 0; idx < genreItems.length; idx++) {
+        const item = genreItems[idx];
+        const filename = formatSafeVideoFilename(
+          idx,
+          item,
+          settings.addTrackNumberPrefix,
+          settings.cleanFilenamesForStereos
+        );
+
+        onProgress?.(
+          Math.round(10 + (processedCount / total) * 75),
+          `Empaquetando: ${safeGenreFolder}/${filename}`
+        );
+
+        const { blob, reason } = await getPlayableVideoBlob(item.videoStreamUrl);
+        if (blob) {
+          folder ??= zip.folder(safeGenreFolder);
+          folder?.file(filename, blob);
+          genreIncluded.push(item);
+          includedItems.push(item);
+        } else {
+          failedItems.push({
+            title: item.title,
+            filename: `${safeGenreFolder}/${filename}`,
+            reason: reason || 'No disponible',
+          });
         }
+        processedCount++;
+      }
 
-        for (let idx = 0; idx < genreItems.length; idx++) {
-          const item = genreItems[idx];
-          const filename = formatSafeVideoFilename(
-            idx,
-            item,
-            settings.addTrackNumberPrefix,
-            settings.cleanFilenamesForStereos
-          );
-
-          onProgress?.(
-            Math.round(10 + (processedCount / total) * 75),
-            `Empaquetando: ${safeGenreFolder}/${filename}`
-          );
-
-          const videoBlob = await getPlayableVideoBlob(item.videoStreamUrl);
-          if (videoBlob) {
-            folder.file(filename, videoBlob);
-          }
-          processedCount++;
-        }
+      if (folder && settings.generateM3uPlaylists && genreIncluded.length > 0) {
+        folder.file(
+          `${safeGenreFolder}_Lista.m3u`,
+          generateM3uContent(genre, genreIncluded, settings)
+        );
       }
     }
   } else {
-    if (settings.generateM3uPlaylists) {
-      zip.file('Lista_USB.m3u', generateM3uContent('Lista USB Auto', items, settings));
-    }
-
     for (let idx = 0; idx < items.length; idx++) {
       const item = items[idx];
       const filename = formatSafeVideoFilename(
@@ -345,13 +390,36 @@ export async function createUsbZipArchive(
         `Empaquetando: ${filename}`
       );
 
-      const videoBlob = await getPlayableVideoBlob(item.videoStreamUrl);
-      if (videoBlob) {
-        zip.file(filename, videoBlob);
+      const { blob, reason } = await getPlayableVideoBlob(item.videoStreamUrl);
+      if (blob) {
+        zip.file(filename, blob);
+        includedItems.push(item);
+      } else {
+        failedItems.push({
+          title: item.title,
+          filename,
+          reason: reason || 'No disponible',
+        });
       }
       processedCount++;
     }
+
+    if (settings.generateM3uPlaylists && includedItems.length > 0) {
+      zip.file('Lista_USB.m3u', generateM3uContent('Lista USB Auto', includedItems, settings));
+    }
   }
+
+  if (items.length > 0 && includedItems.length === 0) {
+    const firstReason = failedItems[0]?.reason || 'No disponible';
+    throw new Error(
+      `No se pudo descargar ninguno de los ${items.length} videos (${firstReason}). Usa la descarga individual de MP4 o impórtalos en local.`
+    );
+  }
+
+  zip.file(
+    'LEEME_INSTRUCCIONES_COCHE.txt',
+    buildUsbInstructionsText(includedItems, failedItems)
+  );
 
   onProgress?.(90, 'Generando archivo ZIP...');
   const zipBlob = await zip.generateAsync({ type: 'blob' }, (metadata) => {
@@ -362,5 +430,9 @@ export async function createUsbZipArchive(
   });
 
   onProgress?.(100, '¡Empaquetado completado!');
-  return zipBlob;
+  return {
+    blob: zipBlob,
+    includedCount: includedItems.length,
+    failedItems,
+  };
 }

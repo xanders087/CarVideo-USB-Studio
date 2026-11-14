@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   FileCheck2,
   AlertTriangle,
@@ -20,9 +20,10 @@ import { CarVideoItem } from '../types/media';
 import {
   verifyVideoMetadata,
   VideoMetadataVerificationResult,
+  DetailedMetadataCheck,
   generateFolderRepairBat,
 } from '../services/videoMetadataVerifier';
-import { downloadBlob, useClipboard } from '../utils/mediaHelpers';
+import { downloadBlob, useClipboard, useModalDialog } from '../utils/mediaHelpers';
 
 interface VideoMetadataInspectorModalProps {
   isOpen: boolean;
@@ -30,6 +31,96 @@ interface VideoMetadataInspectorModalProps {
   currentVideo: CarVideoItem | null;
   videoElement?: HTMLVideoElement | null;
 }
+
+function renderCheckIcon(status: DetailedMetadataCheck['status']) {
+  if (status === 'pass') {
+    return <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />;
+  }
+  if (status === 'warn') {
+    return <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />;
+  }
+  return <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />;
+}
+
+function getAudioTrackSummary(result: VideoMetadataVerificationResult): string {
+  if (!result.hasAudioTrack) return '0 (Mudo)';
+  if (!result.isMetadataVerified) return 'Sin verificar';
+  return `${result.audioTrackCount} Pista`;
+}
+
+function getConsoleStatusMeta(result: VideoMetadataVerificationResult): {
+  label: string;
+  className: string;
+} {
+  if (!result.isMetadataVerified && result.hasAudioTrack) {
+    return { label: 'SIN VERIFICAR', className: 'text-slate-300' };
+  }
+  if (result.isCarConsoleCompatible) {
+    return { label: 'COMPATIBLE', className: 'text-emerald-400' };
+  }
+  return { label: 'RECODIFICAR', className: 'text-amber-400' };
+}
+
+const MetadataStatusBanner: React.FC<{ result: VideoMetadataVerificationResult }> = ({
+  result,
+}) => {
+  if (!result.hasAudioTrack) {
+    return (
+      <div className="p-4 rounded-xl border border-red-500/80 bg-red-950/60 flex items-start gap-3">
+        <VolumeX className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <div className="font-bold text-sm text-white">Video sin pista de audio</div>
+          <p className="text-red-200 leading-relaxed">{result.recodingReason}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!result.isMetadataVerified) {
+    return (
+      <div className="p-4 rounded-xl border border-slate-700 bg-slate-950/80 flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="text-sm font-bold text-white">Metadatos de pistas sin verificar</div>
+            <p className="text-slate-300 leading-relaxed">{result.recodingReason}</p>
+          </div>
+        </div>
+        <div className="text-xs font-bold font-mono text-slate-300 shrink-0">SIN VERIFICAR</div>
+      </div>
+    );
+  }
+
+  if (result.isOpusOrVorbis || result.compatibilityStatus === 'warning') {
+    const title = result.isOpusOrVorbis
+      ? `Audio ${result.audioCodec} incompatible con la mayoría de estéreos`
+      : 'Compatibilidad parcial con estéreos';
+    return (
+      <div className="p-4 rounded-xl border border-amber-500/80 bg-amber-950/60 flex items-start gap-3">
+        <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <div className="font-bold text-sm text-white">{title}</div>
+          <p className="text-amber-200 leading-relaxed">{result.recodingReason}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 rounded-xl border border-emerald-500/60 bg-emerald-950/40 flex items-center justify-between gap-4">
+      <div className="flex items-center gap-3">
+        <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+        <div>
+          <div className="text-sm font-bold text-white">Compatible con pantalla de auto</div>
+          <div className="text-slate-400">
+            {result.audioCodec} · {result.audioChannels} canales · {result.audioSampleRate} Hz
+          </div>
+        </div>
+      </div>
+      <div className="text-xl font-bold font-mono text-emerald-400">100%</div>
+    </div>
+  );
+};
 
 export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalProps> = ({
   isOpen,
@@ -43,52 +134,83 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const requestIdRef = useRef(0);
+
   const { copiedKey, copy } = useClipboard();
+  useModalDialog(isOpen, onClose, panelRef);
 
-  useEffect(() => {
-    if (isOpen && currentVideo && activeTab === 'current') {
-      analyzeCurrentVideo();
-    }
-  }, [isOpen, currentVideo?.id, activeTab]);
-
-  const analyzeCurrentVideo = async () => {
+  const analyzeCurrentVideo = useCallback(async () => {
     if (!currentVideo) return;
+    const requestId = ++requestIdRef.current;
     setIsAnalyzing(true);
     try {
       const res = await verifyVideoMetadata(currentVideo, videoElement);
-      setResult(res);
+      if (requestIdRef.current === requestId) {
+        setResult(res);
+      }
     } catch (err) {
       console.error('Error verifying video metadata:', err);
     } finally {
-      setIsAnalyzing(false);
+      if (requestIdRef.current === requestId) {
+        setIsAnalyzing(false);
+      }
     }
-  };
+  }, [currentVideo, videoElement]);
+
+  useEffect(() => {
+    if (isOpen && currentVideo && activeTab === 'current') {
+      void analyzeCurrentVideo();
+    }
+    return () => {
+      requestIdRef.current += 1;
+    };
+  }, [isOpen, currentVideo?.id, activeTab, analyzeCurrentVideo]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+
+    const requestId = ++requestIdRef.current;
     setUploadedFileName(file.name);
     setIsAnalyzing(true);
     try {
       const res = await verifyVideoMetadata(file);
-      setResult(res);
+      if (requestIdRef.current === requestId) {
+        setResult(res);
+      }
     } catch (err) {
       console.error('Error verifying uploaded file:', err);
     } finally {
-      setIsAnalyzing(false);
+      if (requestIdRef.current === requestId) {
+        setIsAnalyzing(false);
+      }
     }
   };
 
   if (!isOpen) return null;
 
+  const consoleStatus = result ? getConsoleStatusMeta(result) : null;
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/85 backdrop-blur-md"
-      onClick={onClose}
+    <dialog
+      open
+      aria-modal="true"
+      aria-labelledby="metadata-inspector-modal-title"
+      className="fixed inset-0 z-50 m-0 h-full w-full max-h-none max-w-none bg-transparent border-0 p-3 sm:p-5 flex items-center justify-center"
     >
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label="Cerrar inspector"
+        onClick={onClose}
+        className="fixed inset-0 w-full h-full bg-slate-950/85 backdrop-blur-md border-0 p-0 cursor-default"
+      />
       <div
-        className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative z-10 bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden focus:outline-none"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950">
@@ -97,7 +219,10 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
               <FileCheck2 className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-bold text-white font-display">
+              <h2
+                id="metadata-inspector-modal-title"
+                className="text-base sm:text-lg font-bold text-white font-display"
+              >
                 Inspector de Audio y Video para Auto
               </h2>
               <p className="text-xs text-slate-400">
@@ -146,11 +271,13 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
           {activeTab === 'current' && (
             <button
               type="button"
-              onClick={analyzeCurrentVideo}
+              onClick={() => void analyzeCurrentVideo()}
               disabled={isAnalyzing}
               className="ml-auto px-2.5 py-1 text-slate-300 hover:text-white rounded hover:bg-slate-800 flex items-center gap-1 text-[11px]"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isAnalyzing ? 'animate-spin text-cyan-400' : ''}`} />
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${isAnalyzing ? 'animate-spin text-cyan-400' : ''}`}
+              />
               <span>Reanalizar</span>
             </button>
           )}
@@ -164,7 +291,10 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
                 ref={fileInputRef}
                 type="file"
                 accept=".mp4,.m4v,.mkv,.webm"
-                onChange={handleFileUpload}
+                aria-label="Seleccionar archivo de video de tu PC"
+                onChange={(e) => {
+                  void handleFileUpload(e);
+                }}
                 className="hidden"
               />
               <p className="text-slate-300">
@@ -184,46 +314,16 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
             </div>
           )}
 
-          {isAnalyzing ? (
+          {isAnalyzing && (
             <div className="py-10 flex flex-col items-center justify-center text-center space-y-2">
               <RefreshCw className="w-7 h-7 text-cyan-400 animate-spin" />
               <div className="text-sm font-bold text-white">Analizando metadatos MP4...</div>
             </div>
-          ) : result ? (
+          )}
+
+          {!isAnalyzing && result && (
             <div className="space-y-5">
-              {/* Status banner */}
-              {!result.hasAudioTrack ? (
-                <div className="p-4 rounded-xl border border-red-500/80 bg-red-950/60 flex items-start gap-3">
-                  <VolumeX className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <div className="font-bold text-sm text-white">Video sin pista de audio</div>
-                    <p className="text-red-200 leading-relaxed">{result.recodingReason}</p>
-                  </div>
-                </div>
-              ) : result.isOpusOrVorbis || result.compatibilityStatus === 'warning' ? (
-                <div className="p-4 rounded-xl border border-amber-500/80 bg-amber-950/60 flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <div className="font-bold text-sm text-white">
-                      Audio {result.audioCodec} incompatible con la mayoría de estéreos
-                    </div>
-                    <p className="text-amber-200 leading-relaxed">{result.recodingReason}</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-4 rounded-xl border border-emerald-500/60 bg-emerald-950/40 flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <div>
-                      <div className="text-sm font-bold text-white">Compatible con pantalla de auto</div>
-                      <div className="text-slate-400">
-                        {result.audioCodec} · {result.audioChannels} canales · {result.audioSampleRate} Hz
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-xl font-bold font-mono text-emerald-400">100%</div>
-                </div>
-              )}
+              <MetadataStatusBanner result={result} />
 
               {/* Metrics */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -237,7 +337,7 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
                     )}
                   </div>
                   <div className="font-bold font-mono text-sm text-white mt-1">
-                    {result.audioTrackCount > 0 ? `${result.audioTrackCount} Pista` : '0 (Mudo)'}
+                    {getAudioTrackSummary(result)}
                   </div>
                 </div>
 
@@ -260,12 +360,8 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
 
                 <div className="p-3 rounded-xl border border-slate-800 bg-slate-950/50">
                   <div className="text-[11px] text-slate-400">Consola</div>
-                  <div
-                    className={`font-bold font-mono text-sm mt-1 ${
-                      result.isCarConsoleCompatible ? 'text-emerald-400' : 'text-amber-400'
-                    }`}
-                  >
-                    {result.isCarConsoleCompatible ? 'COMPATIBLE' : 'RECODIFICAR'}
+                  <div className={`font-bold font-mono text-sm mt-1 ${consoleStatus?.className || ''}`}>
+                    {consoleStatus?.label}
                   </div>
                 </div>
               </div>
@@ -275,19 +371,15 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
                 {result.detailedChecks.map((check) => (
                   <div key={check.id} className="p-3 flex items-center justify-between gap-3">
                     <div className="flex items-start gap-2 min-w-0">
-                      {check.status === 'pass' ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      ) : check.status === 'warn' ? (
-                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                      ) : (
-                        <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                      )}
+                      {renderCheckIcon(check.status)}
                       <div>
                         <div className="font-semibold text-white">{check.title}</div>
                         <div className="text-[11px] text-slate-400">{check.carImpact}</div>
                       </div>
                     </div>
-                    <div className="font-mono text-right shrink-0 text-slate-300">{check.detected}</div>
+                    <div className="font-mono text-right shrink-0 text-slate-300">
+                      {check.detected}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -327,7 +419,7 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
                     </button>
                     <button
                       type="button"
-                      onClick={() => copy(result.ffmpegCommand, 'ffmpeg')}
+                      onClick={() => void copy(result.ffmpegCommand, 'ffmpeg')}
                       className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold flex items-center gap-1.5"
                     >
                       {copiedKey === 'ffmpeg' ? (
@@ -341,11 +433,13 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
                 </div>
               )}
             </div>
-          ) : null}
+          )}
         </div>
 
         <div className="px-6 py-3.5 border-t border-slate-800 bg-slate-950 flex items-center justify-between text-xs text-slate-400">
-          <span className="font-mono truncate">{result?.fileName || currentVideo?.title || 'Sin archivo'}</span>
+          <span className="font-mono truncate">
+            {result?.fileName || currentVideo?.title || 'Sin archivo'}
+          </span>
           <button
             type="button"
             onClick={onClose}
@@ -355,6 +449,6 @@ export const VideoMetadataInspectorModal: React.FC<VideoMetadataInspectorModalPr
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };

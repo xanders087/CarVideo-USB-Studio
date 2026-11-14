@@ -26,6 +26,20 @@ if (fs.existsSync(videosDir)) {
   }));
 }
 
+function classifyArchiveHeight(height: unknown): '1080p' | '720p' | '480p' | 'Sin verificar' {
+  const numericHeight = Number(height);
+  if (!Number.isFinite(numericHeight) || numericHeight <= 0) {
+    return 'Sin verificar';
+  }
+  if (numericHeight >= 1000) {
+    return '1080p';
+  }
+  if (numericHeight >= 720) {
+    return '720p';
+  }
+  return '480p';
+}
+
 // Endpoint: Real Live Search on Archive.org for Public Domain Music Videos & Live Concerts
 app.get('/api/archive-search', async (req, res) => {
   const query = (req.query.q as string) || '';
@@ -62,11 +76,19 @@ app.get('/api/archive-search', async (req, res) => {
                         files.find(f => f.name?.toLowerCase().endsWith('.mp4') && !f.name?.includes('_thumb'));
         if (!mp4File) return null;
 
-        const sizeMb = mp4File.size ? Math.round((Number(mp4File.size) / (1024 * 1024)) * 10) / 10 : 38.0;
-        const durationSec = mp4File.length ? Math.round(Number(mp4File.length)) : 195;
+        const parsedSize = Number(mp4File.size);
+        const sizeMb = Number.isFinite(parsedSize) && parsedSize > 0
+          ? Math.round((parsedSize / (1024 * 1024)) * 10) / 10
+          : 0;
+        const parsedLength = Number(mp4File.length);
+        const durationSec = Number.isFinite(parsedLength) && parsedLength > 0
+          ? Math.round(parsedLength)
+          : 0;
         const mins = Math.floor(durationSec / 60);
         const secs = durationSec % 60;
-        const durationFormatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        const durationFormatted = durationSec > 0
+          ? `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+          : '--:--';
         
         const rawTitle = (doc.title || doc.identifier || 'Video Musical')
           .replace(/y2mate\.com\s*-\s*/gi, '')
@@ -77,6 +99,7 @@ app.get('/api/archive-search', async (req, res) => {
 
         const encodedFile = encodeURIComponent(mp4File.name);
         const directUrl = `https://archive.org/download/${doc.identifier}/${encodedFile}`;
+        const resolution = classifyArchiveHeight(mp4File.height);
         
         return {
           id: `archive-${doc.identifier}`,
@@ -85,13 +108,13 @@ app.get('/api/archive-search', async (req, res) => {
           artist: doc.year ? `Archivo Histórico (${doc.year})` : 'Internet Archive',
           year: doc.year || 'Histórico',
           downloads: doc.downloads || 0,
-          format: 'MP4 (H.264 / MPEG-4)',
+          format: 'MP4',
           fileSizeMb: sizeMb,
           durationFormatted,
           durationSeconds: durationSec,
-          resolution: mp4File.height && Number(mp4File.height) >= 720 ? '720p' : (mp4File.height && Number(mp4File.height) >= 1000 ? '1080p' : '480p'),
-          videoCodec: 'H.264 Baseline / Main',
-          audioCodec: 'AAC Estéreo 44.1 kHz',
+          resolution,
+          videoCodec: mp4File.format ? `MP4 (${mp4File.format}) · Sin verificar` : 'MP4 (Sin verificar)',
+          audioCodec: 'Sin verificar (archivo remoto)',
           downloadUrl: directUrl,
           videoStreamUrl: directUrl,
           source: 'Internet Archive (Abierto / Dominio Público)',
@@ -158,6 +181,14 @@ app.get('/api/download/video', (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=3600');
 
   const fileStream = fs.createReadStream(targetPath);
+  fileStream.on('error', (streamError) => {
+    console.error('Error streaming video file:', streamError);
+    if (!res.headersSent) {
+      res.status(500).send('Error al leer el video en el servidor');
+    } else {
+      res.destroy();
+    }
+  });
   fileStream.pipe(res);
 });
 

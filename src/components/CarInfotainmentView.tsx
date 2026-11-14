@@ -14,7 +14,6 @@ import {
   Download,
   Radio,
   Film,
-  Youtube,
   RotateCcw,
   RotateCw,
   ListMusic,
@@ -33,7 +32,7 @@ import {
   verifyVideoMetadata,
   VideoMetadataVerificationResult,
 } from '../services/videoMetadataVerifier';
-import { formatSeconds } from '../utils/mediaHelpers';
+import { formatDurationOrUnknown, formatSeconds } from '../utils/mediaHelpers';
 
 interface CarInfotainmentViewProps {
   currentVideo: CarVideoItem | null;
@@ -43,6 +42,122 @@ interface CarInfotainmentViewProps {
   onNavigateToAdd: () => void;
   onOpenRepairTool: () => void;
 }
+
+interface AudioCompatCardProps {
+  hasNoAudioTrack: boolean;
+  isOpusOrVorbis: boolean;
+  isUnverifiedAudio: boolean;
+  onInspect: () => void;
+  onOpenRepairTool: () => void;
+}
+
+const CarAudioCompatCard: React.FC<AudioCompatCardProps> = ({
+  hasNoAudioTrack,
+  isOpusOrVorbis,
+  isUnverifiedAudio,
+  onInspect,
+  onOpenRepairTool,
+}) => {
+  if (hasNoAudioTrack) {
+    return (
+      <div className="p-3 bg-red-950/70 border border-red-600/80 rounded-xl space-y-2 text-xs">
+        <div className="flex items-center gap-1.5 font-bold text-red-300">
+          <VolumeX className="w-4 h-4 text-red-400 shrink-0" />
+          <span>Video sin pista de audio</span>
+        </div>
+        <p className="text-[11px] text-red-200 leading-snug">
+          En el coche se verá sin sonido. Úsalo con el reparador para unir el audio AAC.
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onInspect}
+            className="flex-1 py-1.5 px-2.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-[11px]"
+          >
+            Ver solución
+          </button>
+          <button
+            type="button"
+            onClick={onOpenRepairTool}
+            className="py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-[11px] inline-flex items-center gap-1"
+          >
+            <Wrench className="w-3 h-3" />
+            <span>Reparar</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (isOpusOrVorbis) {
+    return (
+      <div className="p-3 bg-amber-950/70 border border-amber-600/80 rounded-xl space-y-2 text-xs">
+        <div className="flex items-center gap-1.5 font-bold text-amber-300">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>Audio Opus/Vorbis (Incompatible)</span>
+        </div>
+        <p className="text-[11px] text-amber-200 leading-snug">
+          Muchos estéreos de auto no reproducen Opus. Recodifica el audio a AAC.
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onInspect}
+            className="flex-1 py-1.5 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px]"
+          >
+            Ver comando FFmpeg
+          </button>
+          <button
+            type="button"
+            onClick={onOpenRepairTool}
+            className="py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-[11px] inline-flex items-center gap-1"
+          >
+            <Wrench className="w-3 h-3" />
+            <span>Reparar</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (isUnverifiedAudio) {
+    return (
+      <div className="p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between text-xs">
+        <div className="flex items-center gap-2 text-slate-300">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+          <span className="text-[11px]">
+            Audio: <strong className="text-slate-200">Sin verificar</strong>
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onInspect}
+          className="text-[11px] text-cyan-400 hover:underline font-mono"
+        >
+          Detalles
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between text-xs">
+      <div className="flex items-center gap-2 text-slate-300">
+        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+        <span className="text-[11px]">
+          Audio: <strong className="text-emerald-400">AAC Estéreo OK</strong>
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={onInspect}
+        className="text-[11px] text-cyan-400 hover:underline font-mono"
+      >
+        Detalles
+      </button>
+    </div>
+  );
+};
 
 export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
   currentVideo,
@@ -54,14 +169,14 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
 }) => {
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(210);
+  const [duration, setDuration] = useState(currentVideo?.durationSeconds || 0);
   const [volume, setVolume] = useState(0.85);
   const [isMuted, setIsMuted] = useState(false);
   const [displayMode, setDisplayMode] = useState<'night' | 'day'>('night');
   const [showMetadataInspector, setShowMetadataInspector] = useState(false);
   const [metadataAnalysis, setMetadataAnalysis] =
     useState<VideoMetadataVerificationResult | null>(null);
-  const [playbackSource, setPlaybackSource] = useState<'mp4' | 'youtube'>('mp4');
+  const [loadedMetaTick, setLoadedMetaTick] = useState(0);
   const [hasVideoError, setHasVideoError] = useState(false);
   const [carClock, setCarClock] = useState('10:45');
 
@@ -82,10 +197,24 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
       setMetadataAnalysis(null);
       return;
     }
+
+    let cancelled = false;
     verifyVideoMetadata(currentVideo, videoRef.current)
-      .then(setMetadataAnalysis)
-      .catch((err) => console.error('Metadata verification error:', err));
-  }, [currentVideo?.id, currentVideo?.videoStreamUrl]);
+      .then((res) => {
+        if (!cancelled) {
+          setMetadataAnalysis(res);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('Metadata verification error:', err);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentVideo, currentVideo?.id, currentVideo?.videoStreamUrl, loadedMetaTick]);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -96,20 +225,21 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
 
   useEffect(() => {
     setHasVideoError(false);
-    setPlaybackSource('mp4');
     setCurrentTime(0);
+    setDuration(currentVideo?.durationSeconds || 0);
+    setLoadedMetaTick(0);
     setIsPlaying(true);
-  }, [currentVideo?.id]);
+  }, [currentVideo?.id, currentVideo?.durationSeconds]);
 
   useEffect(() => {
-    if (playbackSource === 'mp4' && videoRef.current) {
+    if (videoRef.current) {
       if (isPlaying) {
         videoRef.current.play().catch(() => setIsPlaying(false));
       } else {
         videoRef.current.pause();
       }
     }
-  }, [isPlaying, currentVideo?.id, playbackSource]);
+  }, [isPlaying, currentVideo?.id]);
 
   const hasNoAudioTrack = Boolean(
     currentVideo &&
@@ -126,24 +256,38 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
         currentVideo.audioCodec?.toLowerCase().includes('vorbis'))
   );
 
+  const isUnverifiedAudio = Boolean(
+    currentVideo &&
+      !hasNoAudioTrack &&
+      !isOpusOrVorbis &&
+      (metadataAnalysis
+        ? !metadataAnalysis.isMetadataVerified
+        : !currentVideo.audioCodec ||
+          currentVideo.audioCodec.toLowerCase().includes('sin verificar'))
+  );
+
   const togglePlay = () => {
-    if (playbackSource === 'mp4' && videoRef.current) {
-      if (isPlaying) {
-        videoRef.current.pause();
-        setIsPlaying(false);
-      } else {
-        videoRef.current.play().catch(() => setIsPlaying(false));
-        setIsPlaying(true);
-      }
+    if (!videoRef.current) return;
+    if (isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
     } else {
-      setIsPlaying((p) => !p);
+      videoRef.current.play().catch(() => setIsPlaying(false));
+      setIsPlaying(true);
     }
+  };
+
+  const handleLoadedMetadata = () => {
+    if (videoRef.current?.duration && Number.isFinite(videoRef.current.duration)) {
+      setDuration(videoRef.current.duration);
+    }
+    setLoadedMetaTick((t) => t + 1);
   };
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
-      if (videoRef.current.duration && !isNaN(videoRef.current.duration)) {
+      if (videoRef.current.duration && !Number.isNaN(videoRef.current.duration)) {
         setDuration(videoRef.current.duration);
       }
     }
@@ -159,7 +303,8 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
 
   const skipSeconds = (seconds: number) => {
     if (!videoRef.current) return;
-    const next = Math.max(0, Math.min(duration, videoRef.current.currentTime + seconds));
+    const maxBound = duration > 0 ? duration : Number.MAX_SAFE_INTEGER;
+    const next = Math.max(0, Math.min(maxBound, videoRef.current.currentTime + seconds));
     videoRef.current.currentTime = next;
     setCurrentTime(next);
   };
@@ -225,34 +370,6 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {currentVideo.youtubeId && (
-            <div className="flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg text-xs font-medium">
-              <button
-                type="button"
-                onClick={() => {
-                  setPlaybackSource('mp4');
-                  setHasVideoError(false);
-                }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded transition-colors ${
-                  playbackSource === 'mp4' ? 'bg-slate-800 text-cyan-400 font-bold' : 'text-slate-400'
-                }`}
-              >
-                <Film className="w-3.5 h-3.5" />
-                <span>MP4</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPlaybackSource('youtube')}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded transition-colors ${
-                  playbackSource === 'youtube' ? 'bg-slate-800 text-red-400 font-bold' : 'text-slate-400'
-                }`}
-              >
-                <Youtube className="w-3.5 h-3.5" />
-                <span>YouTube</span>
-              </button>
-            </div>
-          )}
-
           <button
             type="button"
             onClick={() => setShowMetadataInspector(true)}
@@ -285,6 +402,7 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
             onClick={toggleFullscreen}
             className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg border border-slate-800"
             title="Pantalla completa"
+            aria-label="Pantalla completa"
           >
             <Maximize2 className="w-4 h-4" />
           </button>
@@ -314,46 +432,26 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
           {/* Player Screen (8 cols) */}
           <div className="lg:col-span-8 flex flex-col space-y-3">
             <div className="relative aspect-video bg-black rounded-xl overflow-hidden border border-neutral-800">
-              {playbackSource === 'youtube' && currentVideo.youtubeId ? (
-                <iframe
-                  src={`https://www.youtube-nocookie.com/embed/${currentVideo.youtubeId}?autoplay=1`}
-                  title={currentVideo.title}
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                  className="w-full h-full border-0"
-                />
-              ) : hasVideoError ? (
+              {hasVideoError ? (
                 <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center space-y-3">
                   <Film className="w-10 h-10 text-cyan-400" />
                   <div>
                     <div className="text-white font-bold text-sm">{currentVideo.title}</div>
                     <p className="text-xs text-neutral-400 mt-1">
-                      No se pudo cargar la vista previa de este enlace externo.
+                      No se pudo cargar la vista previa de este archivo o enlace externo.
                     </p>
                   </div>
-                  <div className="flex gap-2">
-                    {currentVideo.youtubeId && (
-                      <button
-                        type="button"
-                        onClick={() => setPlaybackSource('youtube')}
-                        className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold text-xs inline-flex items-center gap-1.5"
-                      >
-                        <Youtube className="w-4 h-4" />
-                        <span>Ver en YouTube</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHasVideoError(false);
-                        videoRef.current?.load();
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-semibold text-xs inline-flex items-center gap-1.5"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Reintentar</span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHasVideoError(false);
+                      videoRef.current?.load();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-semibold text-xs inline-flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Reintentar</span>
+                  </button>
                 </div>
               ) : (
                 <>
@@ -362,6 +460,7 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                     ref={videoRef}
                     src={currentVideo.videoStreamUrl}
                     poster={currentVideo.thumbnailUrl || undefined}
+                    onLoadedMetadata={handleLoadedMetadata}
                     onTimeUpdate={handleTimeUpdate}
                     onEnded={playNextVideo}
                     onPlay={() => setIsPlaying(true)}
@@ -397,15 +496,16 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
             <div className="space-y-1">
               <input
                 type="range"
+                aria-label="Posición de reproducción"
                 min={0}
-                max={duration || 100}
+                max={duration > 0 ? duration : 100}
                 value={currentTime}
                 onChange={handleSeek}
                 className="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
               />
               <div className="flex justify-between text-xs font-mono text-neutral-400 tabular-nums">
                 <span>{formatSeconds(currentTime)}</span>
-                <span>{formatSeconds(duration)}</span>
+                <span>{formatDurationOrUnknown(duration)}</span>
               </div>
             </div>
           </div>
@@ -415,7 +515,9 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
             <div className="space-y-3">
               <div className="flex items-center justify-between text-xs text-cyan-400 font-semibold">
                 <span>{currentVideo.genre}</span>
-                <span className="font-mono text-neutral-400">{currentVideo.fileSizeMb} MB</span>
+                <span className="font-mono text-neutral-400">
+                  {currentVideo.fileSizeMb > 0 ? `${currentVideo.fileSizeMb} MB` : 'Tamaño N/D'}
+                </span>
               </div>
 
               <div>
@@ -434,78 +536,13 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                 <span>{currentVideo.license.type}</span>
               </button>
 
-              {/* Single clear audio compatibility indicator */}
-              {hasNoAudioTrack ? (
-                <div className="p-3 bg-red-950/70 border border-red-600/80 rounded-xl space-y-2 text-xs">
-                  <div className="flex items-center gap-1.5 font-bold text-red-300">
-                    <VolumeX className="w-4 h-4 text-red-400 shrink-0" />
-                    <span>Video sin pista de audio</span>
-                  </div>
-                  <p className="text-[11px] text-red-200 leading-snug">
-                    En el coche se verá sin sonido. Úsalo con el reparador para unir el audio AAC.
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowMetadataInspector(true)}
-                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-[11px]"
-                    >
-                      Ver solución
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onOpenRepairTool}
-                      className="py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-[11px] inline-flex items-center gap-1"
-                    >
-                      <Wrench className="w-3 h-3" />
-                      <span>Reparar</span>
-                    </button>
-                  </div>
-                </div>
-              ) : isOpusOrVorbis ? (
-                <div className="p-3 bg-amber-950/70 border border-amber-600/80 rounded-xl space-y-2 text-xs">
-                  <div className="flex items-center gap-1.5 font-bold text-amber-300">
-                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                    <span>Audio Opus/Vorbis (Incompatible)</span>
-                  </div>
-                  <p className="text-[11px] text-amber-200 leading-snug">
-                    Muchos estéreos de auto no reproducen Opus. Recodifica el audio a AAC.
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowMetadataInspector(true)}
-                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px]"
-                    >
-                      Ver comando FFmpeg
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onOpenRepairTool}
-                      className="py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-[11px] inline-flex items-center gap-1"
-                    >
-                      <Wrench className="w-3 h-3" />
-                      <span>Reparar</span>
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 text-slate-300">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span className="text-[11px]">
-                      Audio: <strong className="text-emerald-400">AAC Estéreo OK</strong>
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowMetadataInspector(true)}
-                    className="text-[11px] text-cyan-400 hover:underline font-mono"
-                  >
-                    Detalles
-                  </button>
-                </div>
-              )}
+              <CarAudioCompatCard
+                hasNoAudioTrack={hasNoAudioTrack}
+                isOpusOrVorbis={isOpusOrVorbis}
+                isUnverifiedAudio={isUnverifiedAudio}
+                onInspect={() => setShowMetadataInspector(true)}
+                onOpenRepairTool={onOpenRepairTool}
+              />
             </div>
 
             {/* Tactile Transport Controls */}
@@ -515,6 +552,7 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                 onClick={() => skipSeconds(-10)}
                 className="w-10 h-10 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 flex items-center justify-center"
                 title="Retroceder 10s"
+                aria-label="Retroceder 10 segundos"
               >
                 <RotateCcw className="w-4 h-4" />
               </button>
@@ -523,6 +561,7 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                 onClick={playPrevVideo}
                 className="w-11 h-11 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white flex items-center justify-center"
                 title="Anterior"
+                aria-label="Video anterior"
               >
                 <SkipBack className="w-5 h-5" />
               </button>
@@ -531,6 +570,7 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                 onClick={togglePlay}
                 className="w-13 h-13 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center shadow-lg"
                 title={isPlaying ? 'Pausar' : 'Reproducir'}
+                aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
               >
                 {isPlaying ? (
                   <Pause className="w-6 h-6 fill-slate-950" />
@@ -543,6 +583,7 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                 onClick={playNextVideo}
                 className="w-11 h-11 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white flex items-center justify-center"
                 title="Siguiente"
+                aria-label="Siguiente video"
               >
                 <SkipForward className="w-5 h-5" />
               </button>
@@ -551,6 +592,7 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                 onClick={() => skipSeconds(10)}
                 className="w-10 h-10 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 flex items-center justify-center"
                 title="Adelantar 10s"
+                aria-label="Adelantar 10 segundos"
               >
                 <RotateCw className="w-4 h-4" />
               </button>
@@ -563,11 +605,17 @@ export const CarInfotainmentView: React.FC<CarInfotainmentViewProps> = ({
                 onClick={() => setIsMuted((m) => !m)}
                 className="text-neutral-400 hover:text-white"
                 title={isMuted ? 'Activar audio' : 'Silenciar'}
+                aria-label={isMuted ? 'Activar audio' : 'Silenciar'}
               >
-                {isMuted ? <VolumeX className="w-5 h-5 text-red-400" /> : <Volume2 className="w-5 h-5" />}
+                {isMuted ? (
+                  <VolumeX className="w-5 h-5 text-red-400" />
+                ) : (
+                  <Volume2 className="w-5 h-5" />
+                )}
               </button>
               <input
                 type="range"
+                aria-label="Volumen"
                 min={0}
                 max={1}
                 step={0.05}

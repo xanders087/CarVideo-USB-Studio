@@ -1,4 +1,22 @@
-export type VideoResolution = '1080p' | '720p' | '480p';
+export type VideoResolution = '1080p' | '720p' | '480p' | 'Sin verificar';
+
+export const CAR_VIDEO_GENRES = [
+  'Vallenato',
+  'Salsa',
+  'Cumbia',
+  'Regional Mexicano',
+  'Bachata',
+  'Rock',
+  'Pop Latino',
+  'Reggaeton',
+  'Electrónica',
+  'Synthwave',
+  'Lo-Fi Hip-Hop',
+  'Acústico',
+  'Otros',
+] as const;
+
+export type CarVideoGenre = (typeof CAR_VIDEO_GENRES)[number];
 
 export type LicenseType =
   | 'Creative Commons (CC-BY)'
@@ -20,19 +38,7 @@ export interface CarVideoItem {
   id: string;
   title: string;
   artist: string;
-  genre:
-    | 'Vallenato'
-    | 'Salsa'
-    | 'Cumbia'
-    | 'Regional Mexicano'
-    | 'Bachata'
-    | 'Synthwave'
-    | 'Rock'
-    | 'Electrónica'
-    | 'Pop Latino'
-    | 'Lo-Fi Hip-Hop'
-    | 'Reggaeton'
-    | 'Acústico';
+  genre: CarVideoGenre;
   durationSeconds: number;
   durationFormatted: string;
   resolution: VideoResolution;
@@ -42,8 +48,6 @@ export interface CarVideoItem {
   fileSizeMb: number;
   thumbnailUrl: string;
   videoStreamUrl: string;
-  youtubeId?: string;
-  youtubeUrl?: string;
   license: LicenseDetails;
   addedAt: string;
 }
@@ -91,13 +95,18 @@ export interface AnalyzedLocalFile {
   file: File;
   name: string;
   sizeMb: number;
+  cleanTitle: string;
   safeCarName: string;
   url: string;
+  durationSeconds: number;
   durationFormatted: string;
+  resolution: VideoResolution;
   status: 'ready' | 'added';
   isSilentStream: boolean;
   isOpusOrVorbis: boolean;
+  videoCodec: string;
   audioCodec: string;
+  isMetadataVerified: boolean;
   streamFormatNote?: string;
   suggestedFfmpegCommand?: string;
 }

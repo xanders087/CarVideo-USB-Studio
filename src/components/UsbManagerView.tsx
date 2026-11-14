@@ -17,6 +17,8 @@ import {
   Wrench,
 } from 'lucide-react';
 import {
+  CAR_VIDEO_GENRES,
+  CarVideoGenre,
   CarVideoItem,
   UsbExportSettings,
   StereoCompatibilityReport,
@@ -38,6 +40,7 @@ interface UsbManagerViewProps {
   onPlayInCar: (video: CarVideoItem) => void;
   onNavigateToAdd: () => void;
   onOpenRepairTool: () => void;
+  onUpdateGenre: (id: string, genre: CarVideoGenre) => void;
 }
 
 export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
@@ -47,6 +50,7 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
   onPlayInCar,
   onNavigateToAdd,
   onOpenRepairTool,
+  onUpdateGenre,
 }) => {
   const [settings, setSettings] = useState<UsbExportSettings>({
     organizationMode: 'by-genre',
@@ -92,71 +96,90 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
     clearNotice();
 
     try {
-      const zipBlob = await createUsbZipArchive(videos, settings, (percent, status) => {
+      const result = await createUsbZipArchive(videos, settings, (percent, status) => {
         setExportProgress({ percent, status });
       });
 
       const suffix = settings.organizationMode === 'by-genre' ? 'POR_GENEROS' : 'PLANO';
-      downloadBlob(zipBlob, `USB_COCHE_${videos.length}_VIDEOS_${suffix}.zip`, 'application/zip');
-      showNotice(
-        '¡Paquete ZIP descargado! Descomprime las carpetas directamente en la raíz de tu memoria USB.'
+      downloadBlob(
+        result.blob,
+        `USB_COCHE_${result.includedCount}_VIDEOS_${suffix}.zip`,
+        'application/zip'
       );
+
+      if (result.failedItems.length > 0) {
+        const failedNames = result.failedItems.map((f) => f.title).join(', ');
+        showNotice(
+          `ZIP descargado con ${result.includedCount} video(s). No se pudieron descargar ${result.failedItems.length} (${failedNames}); revisa LEEME_INSTRUCCIONES_COCHE.txt o descárgalos en MP4 individual.`,
+          'warning',
+          9000
+        );
+      } else {
+        showNotice(
+          '¡Paquete ZIP descargado! Descomprime las carpetas directamente en la raíz de tu memoria USB.'
+        );
+      }
     } catch (err) {
       console.error('Error al empaquetar USB:', err);
-      showNotice(
-        'No se pudo generar el ZIP completo. Puedes descargar cada MP4 individualmente.',
-        'warning'
-      );
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : 'No se pudo generar el ZIP completo. Puedes descargar cada MP4 individualmente.';
+      showNotice(message, 'warning', 9000);
     } finally {
       setIsExporting(false);
     }
   };
 
   const renderTreeNode = (node: UsbFolderNode, depth = 0) => {
-    const isExpanded = expandedFolders[node.path] ?? true;
-    const isFolder = node.type === 'folder';
+    const paddingStyle = { paddingLeft: `${Math.max(8, depth * 16)}px` };
 
+    if (node.type === 'folder') {
+      const isExpanded = expandedFolders[node.path] ?? true;
+      return (
+        <div key={node.path} className="select-none text-xs">
+          <button
+            type="button"
+            aria-expanded={isExpanded}
+            onClick={() => toggleFolder(node.path)}
+            className="w-full flex items-center gap-2 py-1.5 px-2 rounded-lg transition-colors cursor-pointer hover:bg-slate-800/80 font-medium text-left"
+            style={paddingStyle}
+          >
+            {isExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            )}
+            <Folder className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="text-slate-100 font-semibold truncate">{node.name}</span>
+          </button>
+
+          {isExpanded && node.children && (
+            <div>{node.children.map((child) => renderTreeNode(child, depth + 1))}</div>
+          )}
+        </div>
+      );
+    }
+
+    const isMetaFile = node.name.endsWith('.m3u') || node.name.endsWith('.txt');
     return (
       <div key={node.path} className="select-none text-xs">
         <div
-          onClick={() => isFolder && toggleFolder(node.path)}
-          className={`flex items-center gap-2 py-1.5 px-2 rounded-lg transition-colors ${
-            isFolder
-              ? 'cursor-pointer hover:bg-slate-800/80 font-medium'
-              : 'hover:bg-slate-800/40 text-slate-300'
-          }`}
-          style={{ paddingLeft: `${Math.max(8, depth * 16)}px` }}
+          className="flex items-center gap-2 py-1.5 px-2 rounded-lg transition-colors hover:bg-slate-800/40 text-slate-300"
+          style={paddingStyle}
         >
-          {isFolder ? (
-            <>
-              {isExpanded ? (
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-              ) : (
-                <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-              )}
-              <Folder className="w-4 h-4 text-amber-400 shrink-0" />
-              <span className="text-slate-100 font-semibold truncate">{node.name}</span>
-            </>
+          {isMetaFile ? (
+            <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0 ml-4" />
           ) : (
-            <>
-              {node.name.endsWith('.m3u') || node.name.endsWith('.txt') ? (
-                <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0 ml-4" />
-              ) : (
-                <FileVideo className="w-3.5 h-3.5 text-cyan-400 shrink-0 ml-4" />
-              )}
-              <span className="truncate">{node.name}</span>
-              {node.sizeMb !== undefined && (
-                <span className="text-[10px] text-slate-500 font-mono tabular-nums ml-auto shrink-0">
-                  {node.sizeMb} MB
-                </span>
-              )}
-            </>
+            <FileVideo className="w-3.5 h-3.5 text-cyan-400 shrink-0 ml-4" />
+          )}
+          <span className="truncate">{node.name}</span>
+          {node.sizeMb !== undefined && node.sizeMb > 0 && (
+            <span className="text-[10px] text-slate-500 font-mono tabular-nums ml-auto shrink-0">
+              {node.sizeMb} MB
+            </span>
           )}
         </div>
-
-        {isFolder && isExpanded && node.children && (
-          <div>{node.children.map((child) => renderTreeNode(child, depth + 1))}</div>
-        )}
       </div>
     );
   };
@@ -214,7 +237,7 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
 
           <button
             type="button"
-            onClick={handleExportZip}
+            onClick={() => void handleExportZip()}
             disabled={isExporting}
             className="px-5 py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shrink-0"
           >
@@ -236,7 +259,7 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
         <div className="pt-3 border-t border-slate-800 space-y-1.5">
           <div className="flex justify-between text-xs text-slate-400 font-mono">
             <span>
-              Espacio usado: <strong className="text-cyan-400">{totalSizeMb} MB</strong>
+              Espacio estimado: <strong className="text-cyan-400">{totalSizeMb} MB</strong>
             </span>
             <span>{capacityPercent16Gb}% de una USB de 16 GB</span>
           </div>
@@ -268,6 +291,7 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
 
             <div className="space-y-2">
               <label
+                htmlFor="usb-mode-genre"
                 className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
                   settings.organizationMode === 'by-genre'
                     ? 'bg-cyan-950/30 border-cyan-500/70 text-white'
@@ -275,22 +299,24 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
                 }`}
               >
                 <input
+                  id="usb-mode-genre"
                   type="radio"
                   name="usbMode"
                   checked={settings.organizationMode === 'by-genre'}
                   onChange={() => setSettings((s) => ({ ...s, organizationMode: 'by-genre' }))}
                   className="mt-1 text-cyan-500 focus:ring-cyan-500"
                 />
-                <div>
-                  <div className="text-xs font-semibold">Carpetas por género</div>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
+                <span className="block">
+                  <span className="block text-xs font-semibold">Carpetas por género</span>
+                  <span className="block text-[11px] text-slate-400 mt-0.5">
                     Agrupa en carpetas como <code className="text-cyan-300">/Vallenato/</code> o{' '}
-                    <code className="text-cyan-300">/Salsa/</code>.
-                  </p>
-                </div>
+                    <code className="text-cyan-300">/Otros/</code>.
+                  </span>
+                </span>
               </label>
 
               <label
+                htmlFor="usb-mode-flat"
                 className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
                   settings.organizationMode === 'flat'
                     ? 'bg-cyan-950/30 border-cyan-500/70 text-white'
@@ -298,25 +324,30 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
                 }`}
               >
                 <input
+                  id="usb-mode-flat"
                   type="radio"
                   name="usbMode"
                   checked={settings.organizationMode === 'flat'}
                   onChange={() => setSettings((s) => ({ ...s, organizationMode: 'flat' }))}
                   className="mt-1 text-cyan-500 focus:ring-cyan-500"
                 />
-                <div>
-                  <div className="text-xs font-semibold">Todo en una carpeta (Plano)</div>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
+                <span className="block">
+                  <span className="block text-xs font-semibold">Todo en una carpeta (Plano)</span>
+                  <span className="block text-[11px] text-slate-400 mt-0.5">
                     Todos los MP4 en la raíz de la USB. Ideal para estéreos antiguos.
-                  </p>
-                </div>
+                  </span>
+                </span>
               </label>
             </div>
 
             <div className="pt-3 border-t border-slate-800 space-y-2 text-xs">
-              <label className="flex items-center justify-between text-slate-300 cursor-pointer">
+              <label
+                htmlFor="usb-clean-filenames"
+                className="flex items-center justify-between text-slate-300 cursor-pointer"
+              >
                 <span>Nombres seguros para FAT32</span>
                 <input
+                  id="usb-clean-filenames"
                   type="checkbox"
                   checked={settings.cleanFilenamesForStereos}
                   onChange={(e) =>
@@ -326,9 +357,13 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
                 />
               </label>
 
-              <label className="flex items-center justify-between text-slate-300 cursor-pointer">
+              <label
+                htmlFor="usb-track-prefix"
+                className="flex items-center justify-between text-slate-300 cursor-pointer"
+              >
                 <span>Numerar pistas (01 - , 02 - )</span>
                 <input
+                  id="usb-track-prefix"
                   type="checkbox"
                   checked={settings.addTrackNumberPrefix}
                   onChange={(e) =>
@@ -338,9 +373,13 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
                 />
               </label>
 
-              <label className="flex items-center justify-between text-slate-300 cursor-pointer">
+              <label
+                htmlFor="usb-m3u-playlists"
+                className="flex items-center justify-between text-slate-300 cursor-pointer"
+              >
                 <span>Incluir lista (.M3U)</span>
                 <input
+                  id="usb-m3u-playlists"
                   type="checkbox"
                   checked={settings.generateM3uPlaylists}
                   onChange={(e) =>
@@ -381,8 +420,8 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
                     <span>Reparar</span>
                   </button>
                 </div>
-                {compatibilityReport.warnings.map((w, idx) => (
-                  <p key={idx} className="text-[11px] leading-snug">
+                {compatibilityReport.warnings.map((w) => (
+                  <p key={w} className="text-[11px] leading-snug">
                     • {w}
                   </p>
                 ))}
@@ -425,10 +464,12 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
 
           <div className="space-y-2">
             {videos.map((video, idx) => {
+              const audioLower = video.audioCodec.toLowerCase();
               const hasIssue =
-                video.audioCodec.toLowerCase().includes('sin audio') ||
-                video.audioCodec.toLowerCase().includes('opus') ||
-                video.audioCodec.toLowerCase().includes('vorbis');
+                audioLower.includes('sin audio') ||
+                audioLower.includes('opus') ||
+                audioLower.includes('vorbis');
+              const isUnverifiedAudio = !hasIssue && audioLower.includes('sin verificar');
 
               return (
                 <div
@@ -442,17 +483,37 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
 
                     <div className="min-w-0">
                       <div className="text-sm font-bold text-white truncate">{video.title}</div>
-                      <div className="text-xs text-slate-400 truncate flex flex-wrap items-center gap-1.5 mt-0.5">
-                        <span className="text-cyan-400">{video.artist}</span>
+                      <div className="text-xs text-slate-400 flex flex-wrap items-center gap-1.5 mt-1">
+                        <span className="text-cyan-400 truncate max-w-[140px]">{video.artist}</span>
                         <span aria-hidden="true">·</span>
-                        <span>{video.genre}</span>
+                        <select
+                          aria-label={`Género para ${video.title}`}
+                          value={video.genre}
+                          onChange={(e) =>
+                            onUpdateGenre(video.id, e.target.value as CarVideoGenre)
+                          }
+                          className="px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500"
+                        >
+                          {CAR_VIDEO_GENRES.map((genreOption) => (
+                            <option key={genreOption} value={genreOption}>
+                              {genreOption}
+                            </option>
+                          ))}
+                        </select>
                         <span aria-hidden="true">·</span>
                         <span className="font-mono">{video.durationFormatted}</span>
                         <span aria-hidden="true">·</span>
-                        <span className="font-mono text-emerald-400">{video.fileSizeMb} MB</span>
+                        <span className="font-mono text-emerald-400">
+                          {video.fileSizeMb > 0 ? `${video.fileSizeMb} MB` : 'Tamaño N/D'}
+                        </span>
                         {hasIssue && (
                           <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-950 text-amber-300 border border-amber-700/70 font-mono">
                             Audio incompatible
+                          </span>
+                        )}
+                        {isUnverifiedAudio && (
+                          <span className="px-1.5 py-0.2 rounded text-[10px] bg-slate-900 text-slate-300 border border-slate-700 font-mono">
+                            Audio sin verificar
                           </span>
                         )}
                       </div>
@@ -465,6 +526,7 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
                       onClick={() => onPlayInCar(video)}
                       className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 transition-colors"
                       title="Probar en el auto"
+                      aria-label={`Probar ${video.title} en el auto`}
                     >
                       <Car className="w-4 h-4" />
                     </button>
@@ -484,6 +546,7 @@ export const UsbManagerView: React.FC<UsbManagerViewProps> = ({
                       onClick={() => onRemoveVideo(video.id)}
                       className="p-2 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-800 transition-colors"
                       title="Quitar de Mi USB"
+                      aria-label={`Quitar ${video.title} de Mi USB`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

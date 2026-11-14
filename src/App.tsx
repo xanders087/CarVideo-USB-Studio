@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header, AppTab } from './components/Header';
 import { AddVideosView } from './components/AddVideosView';
 import { UsbManagerView } from './components/UsbManagerView';
@@ -6,13 +6,34 @@ import { CarInfotainmentView } from './components/CarInfotainmentView';
 import { LegalRightsModal } from './components/LegalRightsModal';
 import { LicenseInspectorModal } from './components/LicenseInspectorModal';
 import { FolderAudioRepairTool } from './components/FolderAudioRepairTool';
-import { CarVideoItem } from './types/media';
+import { AnalyzedLocalFile, CarVideoGenre, CarVideoItem } from './types/media';
 import { dedupeVideos } from './utils/mediaHelpers';
 import { Disc3, ShieldCheck } from 'lucide-react';
+
+function revokeUnusedBlobUrls(
+  candidateUrls: string[],
+  activeUsb: CarVideoItem[],
+  activeImported: AnalyzedLocalFile[],
+  activePreviewUrl?: string
+): void {
+  const inUse = new Set<string>([
+    ...activeUsb.map((v) => v.videoStreamUrl),
+    ...activeImported.map((f) => f.url),
+  ]);
+  if (activePreviewUrl) {
+    inUse.add(activePreviewUrl);
+  }
+  for (const url of candidateUrls) {
+    if (url.startsWith('blob:') && !inUse.has(url)) {
+      URL.revokeObjectURL(url);
+    }
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('add');
   const [usbVideos, setUsbVideos] = useState<CarVideoItem[]>([]);
+  const [importedFiles, setImportedFiles] = useState<AnalyzedLocalFile[]>([]);
   const [currentCarVideo, setCurrentCarVideo] = useState<CarVideoItem | null>(null);
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -27,13 +48,37 @@ export default function App() {
     const root = document.documentElement;
     root.classList.remove(theme === 'light' ? 'dark' : 'light');
     root.classList.add(theme);
-    root.setAttribute('data-theme', theme);
+    root.dataset.theme = theme;
     try {
       localStorage.setItem('carvideo_theme', theme);
     } catch {
       // Ignore storage failures in restricted sandboxes
     }
   }, [theme]);
+
+  const usbVideosRef = useRef<CarVideoItem[]>([]);
+  const importedFilesRef = useRef<AnalyzedLocalFile[]>([]);
+  const currentCarVideoRef = useRef<CarVideoItem | null>(null);
+  usbVideosRef.current = usbVideos;
+  importedFilesRef.current = importedFiles;
+  currentCarVideoRef.current = currentCarVideo;
+
+  useEffect(() => {
+    return () => {
+      const urls = new Set<string>();
+      for (const v of usbVideosRef.current) {
+        if (v.videoStreamUrl.startsWith('blob:')) urls.add(v.videoStreamUrl);
+      }
+      for (const f of importedFilesRef.current) {
+        if (f.url.startsWith('blob:')) urls.add(f.url);
+      }
+      const previewUrl = currentCarVideoRef.current?.videoStreamUrl;
+      if (previewUrl?.startsWith('blob:')) urls.add(previewUrl);
+      for (const url of urls) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, []);
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
@@ -52,25 +97,69 @@ export default function App() {
     return added.length;
   };
 
-  const handlePlayInCar = (video: CarVideoItem) => {
+  const handleSelectCarVideo = (video: CarVideoItem) => {
+    const prevUrl = currentCarVideo?.videoStreamUrl;
     setCurrentCarVideo(video);
+    if (prevUrl && prevUrl !== video.videoStreamUrl) {
+      revokeUnusedBlobUrls([prevUrl], usbVideos, importedFiles, video.videoStreamUrl);
+    }
+  };
+
+  const handlePlayInCar = (video: CarVideoItem) => {
+    handleSelectCarVideo(video);
     setActiveTab('car');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleRemoveFromUsb = (id: string) => {
-    setUsbVideos((prev) => {
-      const remaining = prev.filter((v) => v.id !== id);
-      if (currentCarVideo?.id === id) {
-        setCurrentCarVideo(remaining[0] ?? null);
-      }
-      return remaining;
-    });
+    const removed = usbVideos.find((v) => v.id === id);
+    const remaining = usbVideos.filter((v) => v.id !== id);
+    const nextPreview = currentCarVideo?.id === id ? (remaining[0] ?? null) : currentCarVideo;
+    setUsbVideos(remaining);
+    if (currentCarVideo?.id === id) {
+      setCurrentCarVideo(nextPreview);
+    }
+    if (removed) {
+      revokeUnusedBlobUrls(
+        [removed.videoStreamUrl],
+        remaining,
+        importedFiles,
+        nextPreview?.videoStreamUrl
+      );
+    }
   };
 
   const handleClearUsb = () => {
+    const candidateUrls = usbVideos.map((v) => v.videoStreamUrl);
+    if (currentCarVideo) {
+      candidateUrls.push(currentCarVideo.videoStreamUrl);
+    }
     setUsbVideos([]);
     setCurrentCarVideo(null);
+    revokeUnusedBlobUrls(candidateUrls, [], importedFiles, undefined);
+  };
+
+  const handleAddImportedFiles = (newFiles: AnalyzedLocalFile[]) => {
+    setImportedFiles((prev) => [...newFiles, ...prev]);
+  };
+
+  const handleRemoveImportedFile = (id: string) => {
+    const removed = importedFiles.find((f) => f.id === id);
+    const remaining = importedFiles.filter((f) => f.id !== id);
+    setImportedFiles(remaining);
+    if (removed) {
+      revokeUnusedBlobUrls(
+        [removed.url],
+        usbVideos,
+        remaining,
+        currentCarVideo?.videoStreamUrl
+      );
+    }
+  };
+
+  const handleUpdateGenre = (id: string, genre: CarVideoGenre) => {
+    setUsbVideos((prev) => prev.map((v) => (v.id === id ? { ...v, genre } : v)));
+    setCurrentCarVideo((prev) => (prev?.id === id ? { ...prev, genre } : prev));
   };
 
   return (
@@ -89,15 +178,18 @@ export default function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-        {activeTab === 'add' && (
+        <div hidden={activeTab !== 'add'} className={activeTab === 'add' ? undefined : 'hidden'}>
           <AddVideosView
             usbVideos={usbVideos}
+            importedFiles={importedFiles}
+            onAddImportedFiles={handleAddImportedFiles}
+            onRemoveImportedFile={handleRemoveImportedFile}
             onAddToUsb={handleAddToUsb}
             onPreviewInCar={handlePlayInCar}
             onGoToUsb={() => setActiveTab('usb')}
             onOpenRepairTool={() => setIsRepairModalOpen(true)}
           />
-        )}
+        </div>
 
         {activeTab === 'usb' && (
           <UsbManagerView
@@ -107,6 +199,7 @@ export default function App() {
             onPlayInCar={handlePlayInCar}
             onNavigateToAdd={() => setActiveTab('add')}
             onOpenRepairTool={() => setIsRepairModalOpen(true)}
+            onUpdateGenre={handleUpdateGenre}
           />
         )}
 
@@ -114,7 +207,7 @@ export default function App() {
           <CarInfotainmentView
             currentVideo={currentCarVideo}
             playlistVideos={usbVideos}
-            onSelectVideo={setCurrentCarVideo}
+            onSelectVideo={handleSelectCarVideo}
             onOpenLicenseDetails={setInspectingVideo}
             onNavigateToAdd={() => setActiveTab('add')}
             onOpenRepairTool={() => setIsRepairModalOpen(true)}

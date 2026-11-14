@@ -1,5 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, type RefObject } from 'react';
 import { CarVideoItem } from '../types/media';
+
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
  * Triggers a browser file download from a Blob or string payload.
@@ -16,7 +19,7 @@ export function downloadBlob(
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
+  a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -28,6 +31,75 @@ export function formatSeconds(sec: number): string {
   const m = Math.floor(safe / 60);
   const s = safe % 60;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/**
+ * Formats a media duration in seconds or '--:--' when unknown.
+ */
+export function formatDurationOrUnknown(sec: number): string {
+  return Number.isFinite(sec) && sec > 0 ? formatSeconds(sec) : '--:--';
+}
+
+/**
+ * Handles Escape-to-close, initial focus, Tab focus trapping, and focus restoration for dialogs.
+ */
+export function useModalDialog(
+  isOpen: boolean,
+  onClose: () => void,
+  panelRef: RefObject<HTMLElement | null>
+): void {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousFocused = document.activeElement as HTMLElement | null;
+
+    const rafId = requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const firstFocusable = panel.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+      if (firstFocusable) {
+        firstFocusable.focus();
+      } else {
+        panel.focus();
+      }
+    });
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+
+      if (e.key === 'Tab' && panelRef.current) {
+        const focusables = Array.from(
+          panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+        );
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      cancelAnimationFrame(rafId);
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocused?.focus?.();
+    };
+  }, [isOpen, panelRef]);
 }
 
 /**
