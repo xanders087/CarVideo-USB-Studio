@@ -1,10 +1,10 @@
 export type VideoResolution = '1080p' | '720p' | '480p';
 
-export type LicenseType = 
-  | 'Creative Commons (CC-BY)' 
-  | 'Creative Commons (CC0)' 
-  | 'Royalty-Free' 
-  | 'Dominio Público' 
+export type LicenseType =
+  | 'Creative Commons (CC-BY)'
+  | 'Creative Commons (CC0)'
+  | 'Royalty-Free'
+  | 'Dominio Público'
   | 'Autorizado para Uso Personal';
 
 export interface LicenseDetails {
@@ -20,39 +20,41 @@ export interface CarVideoItem {
   id: string;
   title: string;
   artist: string;
-  genre: 'Vallenato' | 'Salsa' | 'Cumbia' | 'Regional Mexicano' | 'Bachata' | 'Synthwave' | 'Rock' | 'Electrónica' | 'Pop Latino' | 'Lo-Fi Hip-Hop' | 'Reggaeton' | 'Acústico';
+  genre:
+    | 'Vallenato'
+    | 'Salsa'
+    | 'Cumbia'
+    | 'Regional Mexicano'
+    | 'Bachata'
+    | 'Synthwave'
+    | 'Rock'
+    | 'Electrónica'
+    | 'Pop Latino'
+    | 'Lo-Fi Hip-Hop'
+    | 'Reggaeton'
+    | 'Acústico';
   durationSeconds: number;
   durationFormatted: string;
   resolution: VideoResolution;
   fps: number;
-  videoCodec: string; // e.g. "H.264 (High Profile)"
-  audioCodec: string; // e.g. "AAC Estéreo (320 kbps)"
+  videoCodec: string;
+  audioCodec: string;
   fileSizeMb: number;
   thumbnailUrl: string;
-  videoStreamUrl: string; // Playable MP4 video URL
+  videoStreamUrl: string;
   youtubeId?: string;
   youtubeUrl?: string;
   license: LicenseDetails;
   addedAt: string;
 }
 
-export interface Playlist {
-  id: string;
-  name: string;
-  description: string;
-  iconName?: string;
-  videoIds: string[];
-}
-
-export type UsbOrganizationMode = 'by-genre' | 'by-playlist';
+export type UsbOrganizationMode = 'by-genre' | 'flat';
 
 export interface UsbExportSettings {
   organizationMode: UsbOrganizationMode;
-  targetFileSystem: 'FAT32' | 'exFAT' | 'NTFS';
   cleanFilenamesForStereos: boolean;
   generateM3uPlaylists: boolean;
   addTrackNumberPrefix: boolean;
-  volumeNormalizationNotice: boolean;
 }
 
 export interface StereoCompatibilityReport {
@@ -63,18 +65,39 @@ export interface StereoCompatibilityReport {
   totalSizeMb: number;
 }
 
-export interface AiMusicRecommendation {
-  id?: string;
+export interface ArchiveSearchResult {
+  id: string;
+  identifier: string;
   title: string;
   artist: string;
-  recordLabel: string;
-  genre: CarVideoItem['genre'];
+  year: string | number;
+  downloads: number;
+  format: string;
+  fileSizeMb: number;
   durationFormatted: string;
   durationSeconds: number;
-  estimatedSizeMb: number;
   resolution: VideoResolution;
-  youtubeId?: string;
-  reasonForDrive: string;
-  selected?: boolean;
+  videoCodec: string;
+  audioCodec: string;
+  downloadUrl: string;
+  videoStreamUrl?: string;
+  streamUrl?: string;
+  source: string;
+  licenseType: string;
 }
 
+export interface AnalyzedLocalFile {
+  id: string;
+  file: File;
+  name: string;
+  sizeMb: number;
+  safeCarName: string;
+  url: string;
+  durationFormatted: string;
+  status: 'ready' | 'added';
+  isSilentStream: boolean;
+  isOpusOrVorbis: boolean;
+  audioCodec: string;
+  streamFormatNote?: string;
+  suggestedFfmpegCommand?: string;
+}

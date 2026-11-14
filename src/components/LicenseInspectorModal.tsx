@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldCheck, X, ExternalLink, CheckCircle2, AlertCircle, Scale, FileText, Info } from 'lucide-react';
+import { ShieldCheck, X, ExternalLink, CheckCircle2, AlertCircle, Scale } from 'lucide-react';
 import { CarVideoItem } from '../types/media';
 
 interface LicenseInspectorModalProps {
@@ -14,8 +14,11 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
   if (!video) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
-      <div 
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
         className="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
         onClick={(e) => e.stopPropagation()}
       >
@@ -37,7 +40,9 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
           </div>
 
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Cerrar verificación de licencia"
             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -98,7 +103,7 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
             
             <div className="p-3 bg-slate-950 border border-emerald-900/50 rounded-xl space-y-1.5">
-              <span className="text-emerald-400 font-bold block flex items-center gap-1">
+              <span className="text-emerald-400 font-bold flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Permitido:</span>
               </span>
@@ -110,7 +115,7 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
             </div>
 
             <div className="p-3 bg-slate-950 border border-red-900/40 rounded-xl space-y-1.5">
-              <span className="text-red-400 font-bold block flex items-center gap-1">
+              <span className="text-red-400 font-bold flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" />
                 <span>No Permitido:</span>
               </span>
@@ -128,6 +133,7 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
         {/* Modal Footer */}
         <div className="px-6 py-3.5 bg-slate-950 border-t border-slate-800 flex justify-end">
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition-colors"
           >

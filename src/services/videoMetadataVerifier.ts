@@ -634,40 +634,10 @@ export interface FolderRepairScriptOptions {
   outputFolder?: string;
   audioBitrate?: string;
   sampleRate?: number;
-  normalizeFilenames?: boolean;
 }
 
-/**
- * Generates an automated 1-click Windows .BAT script to repair all video files
- * in any directory or USB drive, ensuring guaranteed FFmpeg installation,
- * multiplexing separate tracks (.m4a/.opus), and re-encoding audio to AAC Estéreo.
- */
-export function generateFolderRepairBat(options?: FolderRepairScriptOptions): string {
-  const outDir = options?.outputFolder || 'Reparados_Para_Auto';
-  const bitrate = options?.audioBitrate || '192k';
-  const sampleRate = options?.sampleRate || 48000;
-
-  return `@echo off
-setlocal EnableDelayedExpansion
-chcp 65001 >nul
-title Reparador Automático de Videos para Auto - Audio AAC Estéreo (1-Clic)
-color 0B
-cls
-
-echo ==============================================================================
-echo     REPARADOR AUTOMATICO DE VIDEOS Y AUDIO PARA ESTEREOS DE AUTO
-echo     Corrige videos mudos (.f133), audio Opus/Vorbis y une audio separado (.m4a)
-echo     Perfil de salida: MP4 (H.264 / AAC Estereo ${bitrate} ${sampleRate}Hz FastStart)
-echo ==============================================================================
-echo.
-echo Carpeta actual: %CD%
-echo Carpeta destino : %CD%\\${outDir}
-echo.
-
-REM ------------------------------------------------------------------------------
-REM 1. VERIFICACION E INSTALACION GARANTIZADA DE FFMPEG
-REM ------------------------------------------------------------------------------
-set "FFMPEG_CMD=ffmpeg"
+const WINDOWS_FFMPEG_INSTALL_BLOCK = `set "FFMPEG_CMD=ffmpeg"
+set "FFMPEG_OPT="
 where ffmpeg >nul 2>nul
 if %ERRORLEVEL% EQU 0 (
     echo [OK] FFmpeg detectado en el sistema Windows.
@@ -675,20 +645,16 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 if exist "ffmpeg.exe" (
-    echo [OK] ffmpeg.exe detectado localmente en esta carpeta.
+    echo [OK] ffmpeg.exe detectado en esta carpeta.
     set "FFMPEG_CMD=.\\ffmpeg.exe"
+    set "FFMPEG_OPT=--ffmpeg-location ."
     goto :FFMPEG_READY
 )
 
-echo [1/2] FFmpeg no encontrado. Instalando automaticamente version oficial portable...
-echo       (Esto garantiza que todos los videos tengan sonido sin configuracion manual)
-echo.
-
-REM Metodo A: PowerShell descarga y extraccion automatica de binario oficial
+echo [!] FFmpeg no encontrado. Instalando version portable...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " ^
     "$ProgressPreference = 'SilentlyContinue'; " ^
-    "Write-Host 'Descargando motor de audio portable (FFmpeg)...'; " ^
     "try { " ^
     "    Invoke-WebRequest -Uri 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile 'ffmpeg_dl.zip' -UseBasicParsing; " ^
     "    Expand-Archive -Path 'ffmpeg_dl.zip' -DestinationPath 'ffmpeg_temp' -Force; " ^
@@ -698,41 +664,51 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "exit 1"
 
 if exist "ffmpeg.exe" (
-    echo [OK] FFmpeg portatil instalado con exito!
+    echo [OK] FFmpeg portable instalado con exito!
     set "FFMPEG_CMD=.\\ffmpeg.exe"
+    set "FFMPEG_OPT=--ffmpeg-location ."
     goto :FFMPEG_READY
 )
 
-REM Metodo B: Windows Package Manager (winget)
-where winget >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-    echo Intentando instalacion silenciosa via Windows Package Manager (winget)...
-    winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements --silent >nul 2>nul
-    where ffmpeg >nul 2>nul
-    if %ERRORLEVEL% EQU 0 (
-        echo [OK] FFmpeg instalado exitosamente en el sistema!
-        set "FFMPEG_CMD=ffmpeg"
-        goto :FFMPEG_READY
-    )
-)
-
-REM Metodo C: Descarga directa de respaldo
 curl -L -o ffmpeg.exe "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64" 2>nul
 if exist "ffmpeg.exe" (
-    echo [OK] FFmpeg portatil de respaldo listo!
+    echo [OK] FFmpeg portable listo!
     set "FFMPEG_CMD=.\\ffmpeg.exe"
+    set "FFMPEG_OPT=--ffmpeg-location ."
     goto :FFMPEG_READY
 )
 
-echo.
-echo [ERROR CRITICO] No se pudo instalar FFmpeg automaticamente.
-echo Verifica tu conexion a internet o coloca ffmpeg.exe en esta carpeta.
+echo [ERROR] No se pudo instalar FFmpeg automaticamente. Coloca ffmpeg.exe en esta carpeta.
 pause
 exit /b 1
 
-:FFMPEG_READY
+:FFMPEG_READY`;
+
+/**
+ * Generates an automated 1-click Windows .BAT script to repair all video files
+ * in any directory or USB drive, ensuring FFmpeg availability and AAC stereo audio.
+ */
+export function generateFolderRepairBat(options?: FolderRepairScriptOptions): string {
+  const outDir = options?.outputFolder || 'Reparados_Para_Auto';
+  const bitrate = options?.audioBitrate || '192k';
+  const sampleRate = options?.sampleRate || 48000;
+
+  return `@echo off
+setlocal EnableDelayedExpansion
+chcp 65001 >nul
+title Reparador de Videos para Auto - Audio AAC Estereo
+cls
+
+echo ==============================================================================
+echo   REPARADOR DE VIDEOS Y AUDIO PARA ESTEREOS DE AUTO
+echo   Salida: MP4 (H.264 / AAC Estereo ${bitrate} ${sampleRate}Hz FastStart)
+echo ==============================================================================
 echo.
-echo [2/2] Escaneando y reparando archivos de video en esta carpeta...
+
+${WINDOWS_FFMPEG_INSTALL_BLOCK}
+
+echo.
+echo Escaneando y reparando videos en: %CD%
 if not exist "${outDir}" mkdir "${outDir}"
 
 set /a TOTAL=0
@@ -740,62 +716,40 @@ set /a REPAIRED=0
 set /a ERRORS=0
 
 for %%F in (*.mp4 *.webm *.mkv *.m4v *.avi *.ts) do (
-    set "IS_REPAIR_SCRIPT=0"
-    if /I "%%~nxF"=="Reparar_Videos_Auto.bat" set "IS_REPAIR_SCRIPT=1"
-    
-    if "!IS_REPAIR_SCRIPT!"=="0" (
-        set /a TOTAL+=1
-        echo.
-        echo ----------------------------------------------------------------------
-        echo [!TOTAL!] Procesando: "%%~nxF"
-        
-        REM Verificar si existe pista de audio separada con el mismo nombre base (.m4a, .opus, .mp3, .ogg)
-        set "AUDIO_SRC="
-        if exist "%%~nF.m4a" set "AUDIO_SRC=%%~nF.m4a"
-        if not defined AUDIO_SRC if exist "%%~nF.opus" set "AUDIO_SRC=%%~nF.opus"
-        if not defined AUDIO_SRC if exist "%%~nF.mp3" set "AUDIO_SRC=%%~nF.mp3"
-        if not defined AUDIO_SRC if exist "%%~nF.ogg" set "AUDIO_SRC=%%~nF.ogg"
-        
-        if defined AUDIO_SRC (
-            echo  - [MULTIPLEXACION FORZADA] Se detecto pista de audio separada: "!AUDIO_SRC!"
-            echo  - Uniendo video + audio AAC Estereo para auto...
-            !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -i "!AUDIO_SRC!" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\\%%~nF.mp4"
-        ) else (
-            echo  - [RECODIFICACION DE AUDIO] Asegurando AAC Estereo y contenedor MP4 compatible...
-            !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\\%%~nF.mp4"
-        )
-        
-        if exist "${outDir}\\%%~nF.mp4" (
-            echo  [OK] Video reparado con audio garantizado en: "${outDir}\\%%~nF.mp4"
-            set /a REPAIRED+=1
-        ) else (
-            echo  [!] Error procesando este archivo.
-            set /a ERRORS+=1
-        )
+    set /a TOTAL+=1
+    echo [!TOTAL!] Procesando: "%%~nxF"
+
+    set "AUDIO_SRC="
+    if exist "%%~nF.m4a" set "AUDIO_SRC=%%~nF.m4a"
+    if not defined AUDIO_SRC if exist "%%~nF.opus" set "AUDIO_SRC=%%~nF.opus"
+    if not defined AUDIO_SRC if exist "%%~nF.mp3" set "AUDIO_SRC=%%~nF.mp3"
+    if not defined AUDIO_SRC if exist "%%~nF.ogg" set "AUDIO_SRC=%%~nF.ogg"
+
+    if defined AUDIO_SRC (
+        !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -i "!AUDIO_SRC!" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\\%%~nF.mp4"
+    ) else (
+        !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\\%%~nF.mp4"
+    )
+
+    if exist "${outDir}\\%%~nF.mp4" (
+        echo  [OK] "${outDir}\\%%~nF.mp4"
+        set /a REPAIRED+=1
+    ) else (
+        echo  [!] Error al procesar "%%~nxF"
+        set /a ERRORS+=1
     )
 )
 
 echo.
 echo ==============================================================================
-echo                          INFORME FINAL DE REPARACION
+echo   COMPLETADO: !REPAIRED! de !TOTAL! videos listos en "${outDir}" (Errores: !ERRORS!)
 echo ==============================================================================
-echo Videos analizados : !TOTAL!
-echo Videos reparados  : !REPAIRED! (Con audio AAC Estereo 100%% compatible con autos)
-echo Errores           : !ERRORS!
-echo.
-echo Los videos listos para tu vehiculo estan en la carpeta:
-echo   "%CD%\\${outDir}"
-echo.
-echo Puedes copiarlos directamente a tu memoria USB o reproducirlos en el simulador.
-echo ==============================================================================
-echo.
 pause
 `;
 }
 
 /**
- * Generates an automated 1-click macOS / Linux .SH script to repair all video files
- * in a folder with guaranteed FFmpeg verification and AAC audio transcoding.
+ * Generates a macOS / Linux .SH script to repair all videos in a folder to AAC stereo MP4.
  */
 export function generateFolderRepairSh(options?: FolderRepairScriptOptions): string {
   const outDir = options?.outputFolder || 'Reparados_Para_Auto';
@@ -803,162 +757,169 @@ export function generateFolderRepairSh(options?: FolderRepairScriptOptions): str
   const sampleRate = options?.sampleRate || 48000;
 
   return `#!/usr/bin/env bash
-# ==============================================================================
-#   REPARADOR AUTOMÁTICO DE VIDEOS Y AUDIO PARA ESTÉREOS DE AUTO (MAC / LINUX)
-#   Multiplexa audio separado (.m4a/.opus) y recodifica Opus/Vorbis a AAC Estéreo
-# ==============================================================================
 set -e
 
 OUT_DIR="${outDir}"
 mkdir -p "$OUT_DIR"
 
-echo "=============================================================================="
-echo "    REPARADOR AUTOMÁTICO DE VIDEOS PARA PANTALLAS DE AUTO (MAC / LINUX)"
-echo "    Destino: ./$OUT_DIR"
-echo "=============================================================================="
-echo ""
-
 if ! command -v ffmpeg &> /dev/null; then
-    echo "[1/2] FFmpeg no detectado en el sistema. Instalando..."
     if command -v brew &> /dev/null; then
         brew install ffmpeg
     elif command -v apt-get &> /dev/null; then
         sudo apt-get update && sudo apt-get install -y ffmpeg
     else
-        echo "[!] Por favor instala FFmpeg con: brew install ffmpeg"
+        echo "Instala FFmpeg (brew install ffmpeg) y vuelve a ejecutar."
         exit 1
     fi
-else
-    echo "[OK] FFmpeg detectado en el sistema."
 fi
 
-echo ""
-echo "[2/2] Escaneando y reparando archivos de video..."
-count=0
 repaired=0
-
 for f in *.{mp4,webm,mkv,m4v,avi,ts}; do
     [ -f "$f" ] || continue
-    count=$((count+1))
     base="\${f%.*}"
-    echo "------------------------------------------------------------------------------"
-    echo "[$count] Procesando: $f"
-    
+    echo "Procesando: $f"
     if [ -f "$base.m4a" ]; then
-        echo " - [MULTIPLEXACIÓN] Detectado archivo de audio separado: $base.m4a"
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -i "$base.m4a" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     elif [ -f "$base.opus" ]; then
-        echo " - [MULTIPLEXACIÓN] Detectado archivo de audio separado: $base.opus"
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -i "$base.opus" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     elif [ -f "$base.mp3" ]; then
-        echo " - [MULTIPLEXACIÓN] Detectado archivo de audio separado: $base.mp3"
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -i "$base.mp3" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     else
-        echo " - [RECODIFICACIÓN] Asegurando pista AAC Estéreo y contenedor MP4..."
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     fi
-    
-    if [ -f "$OUT_DIR/$base.mp4" ]; then
-        echo " [OK] Guardado en: $OUT_DIR/$base.mp4"
-        repaired=$((repaired+1))
-    fi
+    [ -f "$OUT_DIR/$base.mp4" ] && repaired=$((repaired+1))
 done
 
-echo ""
-echo "=============================================================================="
-echo "  [FINALIZADO] $repaired videos reparados con audio garantizado en: $OUT_DIR"
-echo "=============================================================================="
+echo "Listo: $repaired videos reparados en ./$OUT_DIR"
 `;
 }
 
+export interface YoutubeDownloadScriptOptions {
+  input: string;
+  isPlaylist: boolean;
+  resolution: '720p' | '1080p' | '480p';
+  targetFolder: string;
+  includeTrackPrefix: boolean;
+  organizeInSubfolder: boolean;
+}
+
 /**
- * Generates an automated 1-click Windows .BAT script to download a SINGLE video
- * with guaranteed FFmpeg installation and FORCED AAC audio multiplexing.
+ * Generates unified Windows (.bat), macOS/Linux (.sh), and single-line yt-dlp scripts
+ * for either a single video/search or a full playlist with H.264 + AAC car compatibility.
  */
-export function generateSingleVideoDownloadBat(
-  videoUrl: string,
-  title: string,
-  resolution: string = '720p'
-): string {
-  const height = resolution === '1080p' ? '1080' : '720';
-  const cleanTitle = title.replace(/[^\w\s\u00C0-\u024F]/gi, '').trim() || 'Video_Musical';
-  const safeFilename = `${cleanTitle} (${resolution}).mp4`;
+export function generateYoutubeDownloadScript(options: YoutubeDownloadScriptOptions): {
+  windowsBat: string;
+  macSh: string;
+  singleLineCommand: string;
+  resolvedTarget: string;
+} {
+  const height = options.resolution === '1080p' ? '1080' : options.resolution === '480p' ? '480' : '720';
+  const safeFolder = (options.targetFolder || 'USB_Musica_Auto').replace(/[^\w-]/g, '_') || 'USB_Musica_Auto';
+  const trimmedInput = options.input.replace(/["`\r\n$]/g, '').trim();
+  const isUrl = /^https?:\/\//i.test(trimmedInput);
+  const resolvedTarget = isUrl
+    ? trimmedInput
+    : `ytsearch${options.isPlaylist ? '15' : '1'}:${trimmedInput || 'Carlos Vives La Gota Fria'}`;
 
-  return `@echo off
+  const playlistFlag = options.isPlaylist ? '--yes-playlist' : '--no-playlist';
+  const formatFilter = `bestvideo[vcodec^=avc1][height<=${height}]+bestaudio[acodec^=mp4a]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best[height<=${height}][ext=mp4]/best`;
+
+  const buildTemplate = (forBat: boolean) => {
+    const p = forBat ? '%%' : '%';
+    const prefix = options.isPlaylist && options.includeTrackPrefix ? `${p}(playlist_index)02d - ` : '';
+    const sub = options.isPlaylist && options.organizeInSubfolder ? `${p}(playlist_title)s/` : '';
+    return `${safeFolder}/${sub}${prefix}${p}(title)s.${p}(ext)s`;
+  };
+
+  const singleLineCommand = `yt-dlp ${playlistFlag} -f "${formatFilter}" --merge-output-format mp4 --remux-video mp4 --postprocessor-args "ffmpeg:-c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart" --windows-filenames --no-mtime --continue --ignore-errors -o "${buildTemplate(false)}" "${resolvedTarget}"`;
+
+  const windowsBat = `@echo off
 chcp 65001 >nul
-title Descargador Automotriz de Video Único con Audio Garantizado (H.264 + AAC)
+title CarVideo USB Studio - Descargador MP4 para Auto (${options.resolution})
 cls
-echo ==============================================================================
-echo     DESCARGADOR DE VIDEO INDIVIDUAL PARA AUTO (AUDIO GARANTIZADO)
-echo     Video: MP4 (H.264 Max ${resolution})  -  Audio: AAC Estéreo 192k (Multiplexado)
-echo ==============================================================================
-echo.
-echo Titulo : "${cleanTitle}"
-echo URL    : "${videoUrl}"
+echo ===================================================================
+echo   DESCARGADOR AUTOMOTRIZ YT-DLP + FFMPEG (H.264 + AAC ESTEREO)
+echo   Destino: "${safeFolder}"  -  Calidad: ${options.resolution}
+echo ===================================================================
 echo.
 
-REM 1. Verificar o descargar yt-dlp.exe
 where yt-dlp >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
     if not exist "yt-dlp.exe" (
-        echo [1/3] Descargando motor de descarga yt-dlp...
+        echo [1/2] Descargando yt-dlp.exe...
         curl -L -o yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
-    )
-)
-set YTDLP_CMD=yt-dlp
-if exist "yt-dlp.exe" set YTDLP_CMD=yt-dlp.exe
-
-REM 2. Verificar o instalar FFmpeg garantizado
-set FFMPEG_OPT=
-where ffmpeg >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-    echo [2/3] FFmpeg detectado en el sistema.
-) else (
-    if exist "ffmpeg.exe" (
-        echo [2/3] ffmpeg.exe detectado localmente.
-        set FFMPEG_OPT=--ffmpeg-location .
-    ) else (
-        echo [2/3] Configurando FFmpeg portable para multiplexacion de audio...
-        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-            "$ProgressPreference = 'SilentlyContinue'; " ^
-            "try { " ^
-            "    Invoke-WebRequest -Uri 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile 'ffmpeg_dl.zip' -UseBasicParsing; " ^
-            "    Expand-Archive -Path 'ffmpeg_dl.zip' -DestinationPath 'ffmpeg_temp' -Force; " ^
-            "    $f = Get-ChildItem -Path 'ffmpeg_temp' -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1; " ^
-            "    if ($f) { Copy-Item $f.FullName -Destination 'ffmpeg.exe'; Remove-Item 'ffmpeg_dl.zip' -Force; Remove-Item 'ffmpeg_temp' -Recurse -Force; exit 0 } " ^
-            "} catch {}"
-        if exist "ffmpeg.exe" (
-            set FFMPEG_OPT=--ffmpeg-location .
-            echo       [OK] FFmpeg portable configurado!
-        ) else (
-            curl -L -o ffmpeg.exe "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64" 2>nul
-            if exist "ffmpeg.exe" set FFMPEG_OPT=--ffmpeg-location .
+        if not exist "yt-dlp.exe" (
+            echo [!] No se pudo descargar yt-dlp.exe. Verifica tu conexion.
+            pause
+            exit /b 1
         )
     )
 )
 
-echo.
-echo [3/3] Descargando y forzando multiplexacion de video + audio AAC Estereo...
-echo.
+set "YTDLP_CMD=yt-dlp"
+if exist "yt-dlp.exe" set "YTDLP_CMD=yt-dlp.exe"
 
-%YTDLP_CMD% ^
-  --format "bestvideo[vcodec^=avc1][height<=${height}]+bestaudio[acodec^=mp4a]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best[height<=${height}][ext=mp4]/best" ^
+${WINDOWS_FFMPEG_INSTALL_BLOCK}
+
+if not exist "${safeFolder}" mkdir "${safeFolder}"
+echo.
+echo Descargando y uniendo audio AAC para auto...
+
+%YTDLP_CMD% ${playlistFlag} ^
+  --format "${formatFilter}" ^
   --merge-output-format mp4 ^
   --remux-video mp4 ^
   --postprocessor-args "ffmpeg:-c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart" ^
   %FFMPEG_OPT% ^
   --windows-filenames ^
   --no-mtime ^
-  --output "${safeFilename}" ^
-  "${videoUrl}"
+  --continue ^
+  --ignore-errors ^
+  --output "${buildTemplate(true)}" ^
+  "${resolvedTarget}"
 
 echo.
-echo ==============================================================================
-echo   [COMPLETADO] ARCHIVO LISTO CON AUDIO GARANTIZADO: "${safeFilename}"
-echo   Puedes copiarlo directamente a tu memoria USB o probarlo en el simulador.
-echo ==============================================================================
-echo.
+echo ===================================================================
+echo   [LISTO] Videos guardados en "${safeFolder}" con audio AAC!
+echo ===================================================================
 pause
 `;
-}
 
+  const macSh = `#!/usr/bin/env bash
+set -e
+mkdir -p "${safeFolder}"
+
+if ! command -v yt-dlp &> /dev/null; then
+    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./yt-dlp
+    chmod a+rx ./yt-dlp
+    YTDLP_CMD="./yt-dlp"
+else
+    YTDLP_CMD="yt-dlp"
+fi
+
+if ! command -v ffmpeg &> /dev/null && command -v brew &> /dev/null; then
+    brew install ffmpeg
+fi
+
+$YTDLP_CMD ${playlistFlag} \\
+  --format "${formatFilter}" \\
+  --merge-output-format mp4 \\
+  --remux-video mp4 \\
+  --postprocessor-args "ffmpeg:-c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart" \\
+  --windows-filenames \\
+  --no-mtime \\
+  --continue \\
+  --ignore-errors \\
+  --output "${buildTemplate(false)}" \\
+  "${resolvedTarget}"
+
+echo "[LISTO] Videos guardados en ./${safeFolder}"
+`;
+
+  return {
+    windowsBat,
+    macSh,
+    singleLineCommand,
+    resolvedTarget,
+  };
+}
