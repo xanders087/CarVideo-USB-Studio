@@ -47,6 +47,7 @@ html.light,
   --color-emerald-950: #ecfdf5;
   --color-cyan-950: #ecfeff;
   --color-amber-950: #fffbeb;
+  --color-red-950: #fef2f2;
   --color-sky-950: #f0f9ff;
   --color-indigo-950: #eef2ff;
   --color-purple-950: #faf5ff;
@@ -82,6 +83,7 @@ html.light .bg-emerald-600 .text-white,
 html.light .bg-emerald-700 .text-white,
 html.light .bg-blue-600 .text-white,
 html.light .bg-indigo-600 .text-white,
+html.light .bg-red-600,
 html.light .bg-red-600 .text-white,
 html.light .bg-rose-600 .text-white,
 html.light .bg-slate-900.keep-contrast,
@@ -97,20 +99,30 @@ html.light [data-theme-keep-white] * {
 html.light .text-cyan-400 {
   color: #0e7490;
 }
-html.light .text-cyan-300 {
-  color: #0891b2;
+html.light .text-cyan-300,
+html.light .text-cyan-200 {
+  color: #0e7490;
 }
 html.light .text-emerald-400 {
   color: #047857;
 }
-html.light .text-emerald-300 {
-  color: #059669;
+html.light .text-emerald-300,
+html.light .text-emerald-200 {
+  color: #047857;
 }
 html.light .text-amber-400 {
   color: #b45309;
 }
-html.light .text-amber-300 {
-  color: #d97706;
+html.light .text-amber-300,
+html.light .text-amber-200 {
+  color: #b45309;
+}
+html.light .text-red-400 {
+  color: #b91c1c;
+}
+html.light .text-red-300,
+html.light .text-red-200 {
+  color: #991b1b;
 }
 html.light .text-sky-400 {
   color: #0369a1;

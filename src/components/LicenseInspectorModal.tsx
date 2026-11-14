@@ -1,6 +1,7 @@
-import React from 'react';
-import { ShieldCheck, X, ExternalLink, CheckCircle2, AlertCircle, Scale, FileText, Info } from 'lucide-react';
+import React, { useRef } from 'react';
+import { ShieldCheck, X, ExternalLink, CheckCircle2, AlertCircle, Scale } from 'lucide-react';
 import { CarVideoItem } from '../types/media';
+import { useModalDialog } from '../utils/mediaHelpers';
 
 interface LicenseInspectorModalProps {
   video: CarVideoItem | null;
@@ -11,13 +12,29 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
   video,
   onClose
 }) => {
+  const panelRef = useRef<HTMLDivElement>(null);
+  useModalDialog(Boolean(video), onClose, panelRef);
+
   if (!video) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
-      <div 
-        className="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-        onClick={(e) => e.stopPropagation()}
+    <dialog
+      open
+      aria-modal="true"
+      aria-labelledby="license-inspector-modal-title"
+      className="fixed inset-0 z-50 m-0 h-full w-full max-h-none max-w-none bg-transparent border-0 p-4 flex items-center justify-center"
+    >
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label="Cerrar verificación de licencia"
+        onClick={onClose}
+        className="fixed inset-0 w-full h-full bg-slate-950/80 backdrop-blur-sm border-0 p-0 cursor-default"
+      />
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative z-10 w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] focus:outline-none"
       >
         
         {/* Modal Header */}
@@ -27,7 +44,10 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white font-display">
+              <h3
+                id="license-inspector-modal-title"
+                className="text-base font-bold text-white font-display"
+              >
                 Verificación de Derechos y Licencia
               </h3>
               <p className="text-xs text-slate-400">
@@ -37,7 +57,9 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
           </div>
 
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Cerrar verificación de licencia"
             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -98,7 +120,7 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
             
             <div className="p-3 bg-slate-950 border border-emerald-900/50 rounded-xl space-y-1.5">
-              <span className="text-emerald-400 font-bold block flex items-center gap-1">
+              <span className="text-emerald-400 font-bold flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Permitido:</span>
               </span>
@@ -110,7 +132,7 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
             </div>
 
             <div className="p-3 bg-slate-950 border border-red-900/40 rounded-xl space-y-1.5">
-              <span className="text-red-400 font-bold block flex items-center gap-1">
+              <span className="text-red-400 font-bold flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" />
                 <span>No Permitido:</span>
               </span>
@@ -128,6 +150,7 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
         {/* Modal Footer */}
         <div className="px-6 py-3.5 bg-slate-950 border-t border-slate-800 flex justify-end">
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition-colors"
           >
@@ -136,6 +159,6 @@ export const LicenseInspectorModal: React.FC<LicenseInspectorModalProps> = ({
         </div>
 
       </div>
-    </div>
+    </dialog>
   );
 };

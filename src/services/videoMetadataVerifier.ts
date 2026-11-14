@@ -41,8 +41,9 @@ export interface VideoMetadataVerificationResult {
   detailedChecks: DetailedMetadataCheck[];
   rawBoxesDetected: string[];
   analyzedAt: string;
+  isMetadataVerified: boolean;
   isOpusOrVorbis: boolean;
-  audioCodecType: 'aac' | 'mp3' | 'opus' | 'vorbis' | 'silent' | 'other';
+  audioCodecType: 'aac' | 'mp3' | 'opus' | 'vorbis' | 'silent' | 'unknown' | 'other';
 }
 
 /**
@@ -234,6 +235,111 @@ export function parseMp4Metadata(buffer: ArrayBuffer, fileName = 'video.mp4'): {
   };
 }
 
+async function locateMp4MoovBox(
+  blob: Blob,
+  fileName: string
+): Promise<ReturnType<typeof parseMp4Metadata> | null> {
+  const maxMoovReadBytes = 8 * 1024 * 1024;
+  let offset = 0;
+
+  for (let i = 0; i < 128 && offset + 8 <= blob.size; i++) {
+    const headerBuf = await blob.slice(offset, Math.min(blob.size, offset + 16)).arrayBuffer();
+    if (headerBuf.byteLength < 8) break;
+
+    const view = new DataView(headerBuf);
+    const rawSize = view.getUint32(0);
+    const boxType = String.fromCharCode(
+      view.getUint8(4),
+      view.getUint8(5),
+      view.getUint8(6),
+      view.getUint8(7)
+    );
+
+    let actualSize = rawSize;
+    if (rawSize === 0) {
+      actualSize = blob.size - offset;
+    } else if (rawSize === 1) {
+      if (headerBuf.byteLength < 16) break;
+      actualSize = view.getUint32(8) * 4294967296 + view.getUint32(12);
+    }
+
+    if (!Number.isFinite(actualSize) || actualSize < 8) break;
+
+    if (boxType === 'moov') {
+      const readEnd = Math.min(blob.size, offset + actualSize, offset + maxMoovReadBytes);
+      const moovBuf = await blob.slice(offset, readEnd).arrayBuffer();
+      return parseMp4Metadata(moovBuf, fileName);
+    }
+
+    offset += actualSize;
+  }
+
+  return null;
+}
+
+export async function inspectBlobMp4Boxes(
+  blob: Blob,
+  fileName: string
+): Promise<ReturnType<typeof parseMp4Metadata> | null> {
+  try {
+    const chunkSize = 512 * 1024;
+    const headSize = Math.min(blob.size, chunkSize);
+    const headBuf = await blob.slice(0, headSize).arrayBuffer();
+    const headParsed = parseMp4Metadata(headBuf, fileName);
+
+    if (
+      headParsed.audioTracks.length > 0 ||
+      headParsed.videoTracks.length > 0 ||
+      blob.size <= chunkSize
+    ) {
+      return headParsed;
+    }
+
+    const moovParsed = headParsed.container.startsWith('MP4')
+      ? await locateMp4MoovBox(blob, fileName)
+      : null;
+
+    if (moovParsed && (moovParsed.audioTracks.length > 0 || moovParsed.videoTracks.length > 0)) {
+      return {
+        container: headParsed.container,
+        audioTracks: moovParsed.audioTracks,
+        videoTracks: moovParsed.videoTracks,
+        rawBoxes: [...headParsed.rawBoxes, ...moovParsed.rawBoxes],
+      };
+    }
+
+    const tailStart = Math.max(headSize, blob.size - chunkSize);
+    const tailBuf = await blob.slice(tailStart, blob.size).arrayBuffer();
+    const tailParsed = parseMp4Metadata(tailBuf, fileName);
+
+    return {
+      container:
+        tailParsed.container !== 'MP4 / ISOBMFF' ? tailParsed.container : headParsed.container,
+      audioTracks: tailParsed.audioTracks,
+      videoTracks: tailParsed.videoTracks,
+      rawBoxes: [...headParsed.rawBoxes, ...tailParsed.rawBoxes],
+    };
+  } catch (e) {
+    console.warn('Could not read slice from Blob:', e);
+    return null;
+  }
+}
+
+function resolveAudioCodecType(
+  isMetadataVerified: boolean,
+  hasAudioTrack: boolean,
+  isOpus: boolean,
+  isVorbis: boolean,
+  isAacOrMp3: boolean
+): VideoMetadataVerificationResult['audioCodecType'] {
+  if (!hasAudioTrack) return 'silent';
+  if (!isMetadataVerified) return 'unknown';
+  if (isOpus) return 'opus';
+  if (isVorbis) return 'vorbis';
+  if (isAacOrMp3) return 'aac';
+  return 'other';
+}
+
 /**
  * Inspects a video file or item using multiple inspection layers:
  * 1. Binary MP4 atom parser (if ArrayBuffer or File available)
@@ -245,10 +351,10 @@ export async function verifyVideoMetadata(
   videoElement?: HTMLVideoElement | null
 ): Promise<VideoMetadataVerificationResult> {
   let fileName = 'video_desconocido.mp4';
-  let fileSizeMb = 35.0;
+  let fileSizeMb = 0;
   let parsedBoxes: ReturnType<typeof parseMp4Metadata> | null = null;
   let heuristicIsSilent = false;
-  let duration = 210;
+  let duration = 0;
   let isCarItem = false;
   let itemReference: CarVideoItem | null = null;
 
@@ -256,30 +362,17 @@ export async function verifyVideoMetadata(
   if (source instanceof File) {
     fileName = source.name;
     fileSizeMb = Math.round((source.size / (1024 * 1024)) * 10) / 10;
-    try {
-      // Read initial 512KB to parse header boxes
-      const sliceSize = Math.min(source.size, 512 * 1024);
-      const buffer = await source.slice(0, sliceSize).arrayBuffer();
-      parsedBoxes = parseMp4Metadata(buffer, fileName);
-    } catch (e) {
-      console.warn('Could not read slice from File:', e);
-    }
+    parsedBoxes = await inspectBlobMp4Boxes(source, fileName);
   } else if (source instanceof Blob) {
     fileSizeMb = Math.round((source.size / (1024 * 1024)) * 10) / 10;
-    try {
-      const sliceSize = Math.min(source.size, 512 * 1024);
-      const buffer = await source.slice(0, sliceSize).arrayBuffer();
-      parsedBoxes = parseMp4Metadata(buffer, fileName);
-    } catch (e) {
-      console.warn('Could not read slice from Blob:', e);
-    }
+    parsedBoxes = await inspectBlobMp4Boxes(source, fileName);
   } else if (typeof source === 'object' && 'title' in source) {
     // CarVideoItem
     isCarItem = true;
-    itemReference = source as CarVideoItem;
+    itemReference = source;
     fileName = `${itemReference.title}.mp4`;
-    fileSizeMb = itemReference.fileSizeMb || 45.0;
-    duration = itemReference.durationSeconds || 210;
+    fileSizeMb = itemReference.fileSizeMb ?? 0;
+    duration = itemReference.durationSeconds ?? 0;
 
     // Check codec strings and URL indicators
     if (
@@ -315,24 +408,30 @@ export async function verifyVideoMetadata(
     if (tracks && tracks.length === 0) {
       heuristicIsSilent = true;
     }
-    if (videoElement.duration && !isNaN(videoElement.duration)) {
+    if (videoElement.duration && !Number.isNaN(videoElement.duration)) {
       duration = videoElement.duration;
     }
   }
 
   // Check DASH filename patterns (YouTube standalone video stream IDs)
-  // Format 133 = 240p video-only, 134 = 360p video-only, 135 = 480p, 136 = 720p, 137 = 1080p, 160 = 144p, etc.
   const dashVideoOnlyRegex = /f(133|134|135|136|137|160|242|243|244|247|248|278|394|395|396|397|398|399)\./i;
   if (dashVideoOnlyRegex.test(fileName)) {
     heuristicIsSilent = true;
   }
 
-  // Determine actual audio track presence
+  // Determine actual audio track presence and verification certainty
   let hasAudioTrack = false;
   let audioTrackCount = 0;
-  let detectedAudioCodec = 'Ninguno (Pista ausente)';
+  let detectedAudioCodec = 'Sin verificar (cabecera no leída)';
   let audioChannels = 0;
   let audioSampleRate = 0;
+  let isMetadataVerified = false;
+
+  const itemAudioLower = (itemReference?.audioCodec || '').toLowerCase();
+  const isItemAudioUnverified =
+    !itemReference?.audioCodec ||
+    itemAudioLower.includes('sin verificar') ||
+    itemAudioLower.includes('no verificado');
 
   if (parsedBoxes && parsedBoxes.audioTracks.length > 0) {
     hasAudioTrack = true;
@@ -340,75 +439,128 @@ export async function verifyVideoMetadata(
     detectedAudioCodec = parsedBoxes.audioTracks[0].codec;
     audioChannels = parsedBoxes.audioTracks[0].channels;
     audioSampleRate = parsedBoxes.audioTracks[0].sampleRate;
-  } else if (!heuristicIsSilent && isCarItem && itemReference) {
-    // If not flagged as silent and is normal curated video
-    hasAudioTrack = true;
-    audioTrackCount = 1;
-    detectedAudioCodec = itemReference.audioCodec || 'AAC Estéreo (320 kbps)';
-    audioChannels = 2;
-    audioSampleRate = 48000;
+    isMetadataVerified = true;
   } else if (heuristicIsSilent) {
     hasAudioTrack = false;
     audioTrackCount = 0;
     detectedAudioCodec = 'Sin Audio (Stream DASH mudo)';
-    audioChannels = 0;
-    audioSampleRate = 0;
+    isMetadataVerified = true;
+  } else if (
+    parsedBoxes &&
+    parsedBoxes.videoTracks.length > 0 &&
+    parsedBoxes.container.startsWith('MP4')
+  ) {
+    // moov header read inside MP4 and video track found with zero audio tracks
+    hasAudioTrack = false;
+    audioTrackCount = 0;
+    detectedAudioCodec = 'Sin Audio (0 pistas en MP4)';
+    isMetadataVerified = true;
+  } else if (isCarItem && itemReference && !isItemAudioUnverified) {
+    hasAudioTrack = true;
+    audioTrackCount = 1;
+    detectedAudioCodec = itemReference.audioCodec;
+    audioChannels = 2;
+    audioSampleRate = 48000;
+    isMetadataVerified = true;
+  } else if (isCarItem && itemReference) {
+    hasAudioTrack = true;
+    audioTrackCount = 0;
+    detectedAudioCodec = itemReference.audioCodec || 'Sin verificar (archivo remoto)';
+    isMetadataVerified = false;
+  } else {
+    hasAudioTrack = true;
+    audioTrackCount = 0;
+    detectedAudioCodec = 'Sin verificar (cabecera no leída)';
+    isMetadataVerified = false;
   }
 
   // Video track determination
-  let hasVideoTrack = true;
-  let videoTrackCount = 1;
-  let detectedVideoCodec = 'H.264 / AVC (High@L4.1)';
-  let detectedResolution = '1280x720 (720p HD)';
+  const hasVideoTrack = true;
+  const videoTrackCount = 1;
+  let detectedVideoCodec = 'Sin verificar';
+  let detectedResolution = 'Sin verificar';
+  let isVideoVerified = false;
 
   if (parsedBoxes && parsedBoxes.videoTracks.length > 0) {
     const vt = parsedBoxes.videoTracks[0];
     detectedVideoCodec = vt.codec;
     detectedResolution = `${vt.width}x${vt.height}`;
+    isVideoVerified = true;
   } else if (itemReference) {
-    detectedVideoCodec = itemReference.videoCodec || 'H.264 / AVC';
-    detectedResolution = itemReference.resolution === '1080p' ? '1920x1080 (1080p Full HD)' : '1280x720 (720p HD)';
+    detectedVideoCodec = itemReference.videoCodec || 'Sin verificar';
+    isVideoVerified = !detectedVideoCodec.toLowerCase().includes('sin verificar');
+    if (itemReference.resolution === '1080p') {
+      detectedResolution = '1920x1080 (1080p Full HD)';
+    } else if (itemReference.resolution === '720p') {
+      detectedResolution = '1280x720 (720p HD)';
+    } else if (itemReference.resolution === '480p') {
+      detectedResolution = '480p SD';
+    } else {
+      detectedResolution = 'Sin verificar';
+    }
   }
-
-  // 3. Evaluation against Car Head Unit / Automotive Console Requirements
-  // Car consoles (Pioneer, Sony, Kenwood, Alpine, Android Auto / CarPlay, OEM dashboard stereos)
-  // strictly require:
-  // - Container: MP4
-  // - Video: H.264 (AVC)
-  // - Audio: AAC-LC or standard MP3 stereo
-  // - Missing audio track: FATAL (Plays mute or reports 'Codec Error' / rejects file)
 
   const detailedChecks: DetailedMetadataCheck[] = [];
 
   // Check 1: Audio track presence
-  const audioTrackCheckPassed = hasAudioTrack && audioTrackCount > 0;
-  detailedChecks.push({
-    id: 'audio-presence',
-    title: 'Pista de Audio Embebida en Contenedor',
-    status: audioTrackCheckPassed ? 'pass' : 'fail',
-    expected: '≥ 1 Pista de Audio Estéreo',
-    detected: audioTrackCheckPassed ? `${audioTrackCount} Pista(s) encontrada(s)` : '0 Pistas (Ausente)',
-    carImpact: audioTrackCheckPassed
-      ? 'Correcto: La radio del auto emitirá sonido a través de los altavoces.'
-      : 'CRÍTICO: La consola del coche reproducirá en silencio total o cancelará la pista por error de códec.'
-  });
+  if (!hasAudioTrack) {
+    detailedChecks.push({
+      id: 'audio-presence',
+      title: 'Pista de Audio Embebida en Contenedor',
+      status: 'fail',
+      expected: '≥ 1 Pista de Audio Estéreo',
+      detected: '0 Pistas (Ausente)',
+      carImpact:
+        'CRÍTICO: La consola del coche reproducirá en silencio total o cancelará la pista por error de códec.',
+    });
+  } else if (!isMetadataVerified) {
+    detailedChecks.push({
+      id: 'audio-presence',
+      title: 'Pista de Audio Embebida en Contenedor',
+      status: 'warn',
+      expected: '≥ 1 Pista de Audio Estéreo',
+      detected: 'Sin verificar',
+      carImpact:
+        'No se pudieron leer las pistas internas del archivo. Analiza el MP4 descargado o pruébalo con sonido en la consola.',
+    });
+  } else {
+    detailedChecks.push({
+      id: 'audio-presence',
+      title: 'Pista de Audio Embebida en Contenedor',
+      status: 'pass',
+      expected: '≥ 1 Pista de Audio Estéreo',
+      detected: `${audioTrackCount} Pista(s) encontrada(s)`,
+      carImpact: 'Correcto: La radio del auto emitirá sonido a través de los altavoces.',
+    });
+  }
 
   // Check 2: Audio codec standard
-  const isAacOrMp3 = detectedAudioCodec.toLowerCase().includes('aac') || 
-                     detectedAudioCodec.toLowerCase().includes('mp4a') || 
-                     detectedAudioCodec.toLowerCase().includes('mp3');
-  const isOpus = detectedAudioCodec.toLowerCase().includes('opus');
-  const isVorbis = detectedAudioCodec.toLowerCase().includes('vorbis');
+  const lowerDetectedCodec = detectedAudioCodec.toLowerCase();
+  const isAacOrMp3 =
+    lowerDetectedCodec.includes('aac') ||
+    lowerDetectedCodec.includes('mp4a') ||
+    lowerDetectedCodec.includes('mp3');
+  const isOpus = lowerDetectedCodec.includes('opus');
+  const isVorbis = lowerDetectedCodec.includes('vorbis');
   const isOpusOrVorbis = isOpus || isVorbis;
-  const isUnsupportedCodec = isOpusOrVorbis || detectedAudioCodec.toLowerCase().includes('ac-3');
+  const isUnsupportedCodec = isOpusOrVorbis || lowerDetectedCodec.includes('ac-3');
 
   let audioCodecStatus: 'pass' | 'fail' | 'warn' = 'pass';
-  if (!audioTrackCheckPassed) {
+  let audioCodecImpact = 'Compatible al 100% con todos los estéreos.';
+  if (!hasAudioTrack) {
     audioCodecStatus = 'fail';
+    audioCodecImpact = 'Inexistente: No hay flujo de audio para decodificar.';
+  } else if (!isMetadataVerified) {
+    audioCodecStatus = 'warn';
+    audioCodecImpact =
+      'Sin verificar: la fuente remota o cabecera no expuso el códec de audio; conviene analizar el archivo MP4 en local.';
   } else if (isOpusOrVorbis) {
     audioCodecStatus = 'warn';
-  } else if (isUnsupportedCodec) {
+    const codecTitle = isOpus ? 'Opus' : 'Vorbis';
+    audioCodecImpact = `INCOMPATIBLE con la mayoría de estéreos de auto. Flujo de audio ${codecTitle} detectado. Radios Pioneer, Alpine, Kenwood, Sony y consolas OEM rechazan ${codecTitle}. Se sugiere recodificar a AAC con FFmpeg.`;
+  } else if (isUnsupportedCodec || !isAacOrMp3) {
     audioCodecStatus = 'warn';
+    audioCodecImpact = 'Advertencia: Algunos estéreos no soportan este códec web.';
   }
 
   detailedChecks.push({
@@ -417,56 +569,88 @@ export async function verifyVideoMetadata(
     status: audioCodecStatus,
     expected: 'AAC-LC (mp4a) o MP3 (Estéreo, 44.1/48 kHz)',
     detected: detectedAudioCodec,
-    carImpact: audioTrackCheckPassed 
-      ? (isOpusOrVorbis
-          ? `INCOMPATIBLE con la mayoría de estéreos de auto. Flujo de audio ${isOpus ? 'Opus' : 'Vorbis'} detectado. Radios Pioneer, Alpine, Kenwood, Sony y consolas OEM rechazan ${isOpus ? 'Opus' : 'Vorbis'}. La pantalla reproducirá en silencio o emitirá 'Error de Códec'. Se sugiere recodificar a AAC con FFmpeg.`
-          : (isAacOrMp3 ? 'Compatible al 100% con todos los estéreos.' : 'Advertencia: Algunos estéreos no soportan este códec web.'))
-      : 'Inexistente: No hay flujo de audio para decodificar.'
+    carImpact: audioCodecImpact,
   });
 
   // Check 3: Audio channels
+  let channelsStatus: 'pass' | 'fail' | 'warn' = 'warn';
+  let channelsDetected = 'Sin verificar';
+  let channelsImpact = 'No se pudo comprobar el número de canales sin leer los átomos MP4.';
+  if (!hasAudioTrack) {
+    channelsStatus = 'fail';
+    channelsDetected = '0 Canales';
+    channelsImpact = 'Silencio.';
+  } else if (isMetadataVerified) {
+    channelsStatus = audioChannels >= 2 ? 'pass' : 'warn';
+    channelsDetected = audioChannels > 0 ? `${audioChannels} Canal(es)` : 'Desconocido';
+    channelsImpact =
+      audioChannels >= 2
+        ? 'Balance estéreo óptimo para el sistema de sonido del coche.'
+        : 'Mono: Puede sonar solo en un lado de los parlantes.';
+  }
+
   detailedChecks.push({
     id: 'audio-channels',
     title: 'Canales de Audio (Stereo / Balance)',
-    status: audioChannels >= 2 ? 'pass' : (audioTrackCheckPassed ? 'warn' : 'fail'),
+    status: channelsStatus,
     expected: '2 Canales (Estéreo L/R)',
-    detected: audioChannels > 0 ? `${audioChannels} Canal(es)` : '0 Canales',
-    carImpact: audioChannels >= 2 
-      ? 'Balance estéreo óptimo para el sistema de sonido del coche.' 
-      : (audioTrackCheckPassed ? 'Mono: Puede sonar solo en un lado de los parlantes.' : 'Silencio.')
+    detected: channelsDetected,
+    carImpact: channelsImpact,
   });
 
   // Check 4: Video codec
-  const isH264 = detectedVideoCodec.includes('H.264') || detectedVideoCodec.includes('AVC') || detectedVideoCodec.includes('avc1');
+  const isH264 =
+    detectedVideoCodec.includes('H.264') ||
+    detectedVideoCodec.includes('AVC') ||
+    detectedVideoCodec.includes('avc1');
+  let videoCodecStatus: 'pass' | 'warn' = 'warn';
+  let videoCodecImpact = 'Sin verificar sin lectura completa de átomos MP4.';
+  if (isVideoVerified && isH264) {
+    videoCodecStatus = 'pass';
+    videoCodecImpact = 'Compatible con el 99.8% de procesadores para autos.';
+  } else if (isVideoVerified) {
+    videoCodecStatus = 'warn';
+    videoCodecImpact = 'Verificar si la pantalla soporta HEVC/VP9.';
+  }
   detailedChecks.push({
     id: 'video-codec',
     title: 'Códec de Video Automotriz',
-    status: isH264 ? 'pass' : 'warn',
+    status: videoCodecStatus,
     expected: 'H.264 / AVC (Baseline o High Profile)',
     detected: detectedVideoCodec,
-    carImpact: isH264 ? 'Compatible con el 99.8% de procesadores para autos.' : 'Verificar si la pantalla soporta HEVC/VP9.'
+    carImpact: videoCodecImpact,
   });
 
-  // Check 5: Resolution & Frame Rate
+  // Check 5: Resolution
   detailedChecks.push({
     id: 'resolution-rate',
     title: 'Resolución Máxima para Pantalla de Auto',
-    status: 'pass',
+    status: detectedResolution === 'Sin verificar' ? 'warn' : 'pass',
     expected: '≤ 1080p (720p recomendado para 60 FPS)',
     detected: detectedResolution,
-    carImpact: 'Fluidez óptima sin sobrecalentamiento del chipset del auto.'
+    carImpact:
+      detectedResolution === 'Sin verificar'
+        ? 'No se pudieron leer las dimensiones desde la cabecera.'
+        : 'Fluidez óptima sin sobrecalentamiento del chipset del auto.',
   });
 
-  // Calculate score and compatibility
-  const isCarConsoleCompatible = audioTrackCheckPassed && (isAacOrMp3 || (audioCodecStatus === 'pass' && !isOpusOrVorbis));
+  // Calculate score and compatibility honestly
+  const isCarConsoleCompatible =
+    isMetadataVerified &&
+    hasAudioTrack &&
+    (isAacOrMp3 || (audioCodecStatus === 'pass' && !isOpusOrVorbis));
+
   let compatibilityScore = 100;
   let compatibilityStatus: 'compatible' | 'warning' | 'incompatible' = 'compatible';
 
-  if (!audioTrackCheckPassed) {
-    compatibilityScore = 20; // Only video works
+  if (!hasAudioTrack) {
+    compatibilityScore = 20;
     compatibilityStatus = 'incompatible';
+  } else if (!isMetadataVerified) {
+    compatibilityScore = 0;
+    compatibilityStatus = 'warning';
   } else if (isOpusOrVorbis) {
-    compatibilityScore = 55; // Plays video, but car head units will fail audio
+    compatibilityScore = 55;
     compatibilityStatus = 'warning';
   } else if (audioCodecStatus === 'warn') {
     compatibilityScore = 65;
@@ -481,23 +665,35 @@ export async function verifyVideoMetadata(
   let recodingReason = '';
   let recodingSolution = '';
 
-  if (!audioTrackCheckPassed) {
-    recodingReason = 'El video importado no contiene ninguna pista de audio (0 tracks). Corresponde a un archivo de video-only descargado mediante el formato adaptativo DASH de YouTube sin multiplexar.';
-    recodingSolution = 'Requiere recodificación o multiplexación con FFmpeg para inyectar una pista de audio AAC Estéreo (48 kHz) y hacerlo compatible con la consola del coche.';
+  if (!hasAudioTrack) {
+    recodingReason =
+      'El video importado no contiene ninguna pista de audio (0 tracks). Corresponde a un archivo de video-only descargado mediante el formato adaptativo DASH de YouTube sin multiplexar.';
+    recodingSolution =
+      'Requiere recodificación o multiplexación con FFmpeg para inyectar una pista de audio AAC Estéreo (48 kHz) y hacerlo compatible con la consola del coche.';
     ffmpegCommand = `# Opción A: Si descargaste el video (.mp4) y audio (.m4a) por separado:
 ffmpeg -i "${fileName}" -i "${cleanBaseName}.m4a" -c:v copy -c:a aac -b:a 192k -ar 48000 "${safeOutputName}"
 
 # Opción B: Si deseas agregarle una pista de audio musical directamente:
 ffmpeg -i "${fileName}" -i "musica.mp3" -c:v copy -c:a aac -b:a 320k -shortest "${safeOutputName}"`;
+  } else if (!isMetadataVerified) {
+    recodingReason =
+      'Este elemento proviene de una URL externa o un contenedor cuya cabecera MP4 (átomo moov) no se ha podido leer desde el navegador, por lo que no es posible confirmar H.264 + AAC.';
+    recodingSolution =
+      'Reprodúcelo en la consola para comprobar que tenga audio, o analízalo en local desde "Analizar archivo de tu PC" una vez descargado.';
+    ffmpegCommand = `# Si al probarlo en el coche no tiene sonido, normalízalo a H.264 + AAC:
+ffmpeg -i "${fileName}" -c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart "${safeOutputName}"`;
   } else if (isOpusOrVorbis) {
     const codecName = isOpus ? 'Opus' : 'Vorbis';
     recodingReason = `Flujo de audio ${codecName} detectado. Este códec web es incompatible con la gran mayoría de estéreos y consolas de auto (Pioneer, Kenwood, Sony, Alpine, sistemas OEM), que solo decodifican AAC-LC o MP3.`;
-    recodingSolution = `Recodificar el audio a AAC Estéreo (320 kbps - 48 kHz). Mediante el parámetro "-c:v copy", el flujo de video no se re-codifica, completando el proceso en apenas 2 a 5 segundos sin degradar calidad.`;
+    recodingSolution =
+      'Recodificar el audio a AAC Estéreo (320 kbps - 48 kHz). Mediante el parámetro "-c:v copy", el flujo de video no se re-codifica, completando el proceso en apenas 2 a 5 segundos sin degradar calidad.';
     ffmpegCommand = `# Comando sugerido de FFmpeg para recodificar audio ${codecName} a AAC compatible con coche:
 ffmpeg -i "${fileName}" -c:v copy -c:a aac -b:a 320k -ar 48000 "${safeOutputName}"`;
   } else if (audioCodecStatus === 'warn') {
-    recodingReason = 'El archivo tiene audio, pero el códec no es AAC estándar. Muchas radios de coche rechazan pistas que no sean AAC o MP3.';
-    recodingSolution = 'Recodificar únicamente la pista de audio a AAC-LC de 320 kbps (sin tocar el video, toma menos de 5 segundos).';
+    recodingReason =
+      'El archivo tiene audio, pero el códec no es AAC estándar. Muchas radios de coche rechazan pistas que no sean AAC o MP3.';
+    recodingSolution =
+      'Recodificar únicamente la pista de audio a AAC-LC de 320 kbps (sin tocar el video, toma menos de 5 segundos).';
     ffmpegCommand = `ffmpeg -i "${fileName}" -c:v copy -c:a aac -b:a 320k -ar 48000 "${safeOutputName}"`;
   } else {
     recodingReason = 'El video cuenta con pista de audio AAC y video H.264 válidos.';
@@ -507,7 +703,7 @@ ffmpeg -i "${fileName}" -c:v copy -c:a aac -b:a 320k -af "loudnorm=I=-14:TP=-1.5
   }
 
   // Windows batch script for automated recoding
-  const windowsBatchScript = `@echo off
+  const windowsBatchScript = String.raw`@echo off
 chcp 65001 >nul
 echo ========================================================
 echo   RECODIFICADOR DE VIDEO PARA CONSOLAS DE AUTO (FFmpeg)
@@ -520,9 +716,9 @@ if %errorlevel% neq 0 (
     echo Descargando version portatil de FFmpeg...
     powershell -Command "Invoke-WebRequest -Uri 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile 'ffmpeg.zip'"
     powershell -Command "Expand-Archive -Path 'ffmpeg.zip' -DestinationPath 'ffmpeg_temp' -Force"
-    copy "ffmpeg_temp\\*\\bin\\ffmpeg.exe" .\\ >nul
+    copy "ffmpeg_temp\*\bin\ffmpeg.exe" .\ >nul
 )
-echo [OK] Recodificando a MP4 con pista de audio AAC Estéreo para auto...
+echo [OK] Recodificando a MP4 con pista de audio AAC Estereo para auto...
 ffmpeg -i "${fileName}" -c:v copy -c:a aac -b:a 320k -ar 48000 -movflags +faststart "${safeOutputName}"
 echo ========================================================
 echo [EXITO] Archivo generado: ${safeOutputName}
@@ -530,11 +726,13 @@ echo Copie este archivo a su memoria USB para su vehiculo.
 pause
 `;
 
+  const requiresRecoding = isMetadataVerified && !isCarConsoleCompatible;
+
   return {
     fileName,
     fileSizeMb,
     container: parsedBoxes?.container || 'MP4 (ISOBMFF)',
-    hasAudioTrack: audioTrackCheckPassed,
+    hasAudioTrack,
     audioTrackCount,
     audioCodec: detectedAudioCodec,
     audioChannels,
@@ -547,7 +745,7 @@ pause
     isCarConsoleCompatible,
     compatibilityStatus,
     compatibilityScore,
-    requiresRecoding: !isCarConsoleCompatible,
+    requiresRecoding,
     recodingReason,
     recodingSolution,
     ffmpegCommand,
@@ -555,8 +753,15 @@ pause
     detailedChecks,
     rawBoxesDetected: parsedBoxes?.rawBoxes || [],
     analyzedAt: new Date().toLocaleTimeString(),
+    isMetadataVerified,
     isOpusOrVorbis,
-    audioCodecType: !audioTrackCheckPassed ? 'silent' : isOpus ? 'opus' : isVorbis ? 'vorbis' : isAacOrMp3 ? 'aac' : 'other'
+    audioCodecType: resolveAudioCodecType(
+      isMetadataVerified,
+      hasAudioTrack,
+      isOpus,
+      isVorbis,
+      isAacOrMp3
+    ),
   };
 }
 
@@ -634,40 +839,10 @@ export interface FolderRepairScriptOptions {
   outputFolder?: string;
   audioBitrate?: string;
   sampleRate?: number;
-  normalizeFilenames?: boolean;
 }
 
-/**
- * Generates an automated 1-click Windows .BAT script to repair all video files
- * in any directory or USB drive, ensuring guaranteed FFmpeg installation,
- * multiplexing separate tracks (.m4a/.opus), and re-encoding audio to AAC Estéreo.
- */
-export function generateFolderRepairBat(options?: FolderRepairScriptOptions): string {
-  const outDir = options?.outputFolder || 'Reparados_Para_Auto';
-  const bitrate = options?.audioBitrate || '192k';
-  const sampleRate = options?.sampleRate || 48000;
-
-  return `@echo off
-setlocal EnableDelayedExpansion
-chcp 65001 >nul
-title Reparador Automático de Videos para Auto - Audio AAC Estéreo (1-Clic)
-color 0B
-cls
-
-echo ==============================================================================
-echo     REPARADOR AUTOMATICO DE VIDEOS Y AUDIO PARA ESTEREOS DE AUTO
-echo     Corrige videos mudos (.f133), audio Opus/Vorbis y une audio separado (.m4a)
-echo     Perfil de salida: MP4 (H.264 / AAC Estereo ${bitrate} ${sampleRate}Hz FastStart)
-echo ==============================================================================
-echo.
-echo Carpeta actual: %CD%
-echo Carpeta destino : %CD%\\${outDir}
-echo.
-
-REM ------------------------------------------------------------------------------
-REM 1. VERIFICACION E INSTALACION GARANTIZADA DE FFMPEG
-REM ------------------------------------------------------------------------------
-set "FFMPEG_CMD=ffmpeg"
+const WINDOWS_FFMPEG_INSTALL_BLOCK = String.raw`set "FFMPEG_CMD=ffmpeg"
+set "FFMPEG_OPT="
 where ffmpeg >nul 2>nul
 if %ERRORLEVEL% EQU 0 (
     echo [OK] FFmpeg detectado en el sistema Windows.
@@ -675,20 +850,16 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 if exist "ffmpeg.exe" (
-    echo [OK] ffmpeg.exe detectado localmente en esta carpeta.
-    set "FFMPEG_CMD=.\\ffmpeg.exe"
+    echo [OK] ffmpeg.exe detectado en esta carpeta.
+    set "FFMPEG_CMD=.\ffmpeg.exe"
+    set "FFMPEG_OPT=--ffmpeg-location ."
     goto :FFMPEG_READY
 )
 
-echo [1/2] FFmpeg no encontrado. Instalando automaticamente version oficial portable...
-echo       (Esto garantiza que todos los videos tengan sonido sin configuracion manual)
-echo.
-
-REM Metodo A: PowerShell descarga y extraccion automatica de binario oficial
+echo [!] FFmpeg no encontrado. Instalando version portable...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " ^
     "$ProgressPreference = 'SilentlyContinue'; " ^
-    "Write-Host 'Descargando motor de audio portable (FFmpeg)...'; " ^
     "try { " ^
     "    Invoke-WebRequest -Uri 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile 'ffmpeg_dl.zip' -UseBasicParsing; " ^
     "    Expand-Archive -Path 'ffmpeg_dl.zip' -DestinationPath 'ffmpeg_temp' -Force; " ^
@@ -698,41 +869,53 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "exit 1"
 
 if exist "ffmpeg.exe" (
-    echo [OK] FFmpeg portatil instalado con exito!
-    set "FFMPEG_CMD=.\\ffmpeg.exe"
+    echo [OK] FFmpeg portable instalado con exito!
+    set "FFMPEG_CMD=.\ffmpeg.exe"
+    set "FFMPEG_OPT=--ffmpeg-location ."
     goto :FFMPEG_READY
 )
 
-REM Metodo B: Windows Package Manager (winget)
-where winget >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-    echo Intentando instalacion silenciosa via Windows Package Manager (winget)...
-    winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements --silent >nul 2>nul
-    where ffmpeg >nul 2>nul
-    if %ERRORLEVEL% EQU 0 (
-        echo [OK] FFmpeg instalado exitosamente en el sistema!
-        set "FFMPEG_CMD=ffmpeg"
-        goto :FFMPEG_READY
-    )
-)
-
-REM Metodo C: Descarga directa de respaldo
 curl -L -o ffmpeg.exe "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64" 2>nul
 if exist "ffmpeg.exe" (
-    echo [OK] FFmpeg portatil de respaldo listo!
-    set "FFMPEG_CMD=.\\ffmpeg.exe"
+    echo [OK] FFmpeg portable listo!
+    set "FFMPEG_CMD=.\ffmpeg.exe"
+    set "FFMPEG_OPT=--ffmpeg-location ."
     goto :FFMPEG_READY
 )
 
-echo.
-echo [ERROR CRITICO] No se pudo instalar FFmpeg automaticamente.
-echo Verifica tu conexion a internet o coloca ffmpeg.exe en esta carpeta.
+echo [ERROR] No se pudo instalar FFmpeg automaticamente. Coloca ffmpeg.exe en esta carpeta.
 pause
 exit /b 1
 
-:FFMPEG_READY
+:FFMPEG_READY`;
+
+/**
+ * Generates an automated 1-click Windows .BAT script to repair all video files
+ * in any directory or USB drive, ensuring FFmpeg availability and AAC stereo audio.
+ */
+export function generateFolderRepairBat(options?: FolderRepairScriptOptions): string {
+  const outDir =
+    (options?.outputFolder || 'Reparados_Para_Auto').replace(/[^\w-]/g, '_') ||
+    'Reparados_Para_Auto';
+  const bitrate = options?.audioBitrate || '192k';
+  const sampleRate = options?.sampleRate || 48000;
+
+  return String.raw`@echo off
+setlocal EnableDelayedExpansion
+chcp 65001 >nul
+title Reparador de Videos para Auto - Audio AAC Estereo
+cls
+
+echo ==============================================================================
+echo   REPARADOR DE VIDEOS Y AUDIO PARA ESTEREOS DE AUTO
+echo   Salida: MP4 (H.264 / AAC Estereo ${bitrate} ${sampleRate}Hz FastStart)
+echo ==============================================================================
 echo.
-echo [2/2] Escaneando y reparando archivos de video en esta carpeta...
+
+${WINDOWS_FFMPEG_INSTALL_BLOCK}
+
+echo.
+echo Escaneando y reparando videos en: %CD%
 if not exist "${outDir}" mkdir "${outDir}"
 
 set /a TOTAL=0
@@ -740,225 +923,238 @@ set /a REPAIRED=0
 set /a ERRORS=0
 
 for %%F in (*.mp4 *.webm *.mkv *.m4v *.avi *.ts) do (
-    set "IS_REPAIR_SCRIPT=0"
-    if /I "%%~nxF"=="Reparar_Videos_Auto.bat" set "IS_REPAIR_SCRIPT=1"
-    
-    if "!IS_REPAIR_SCRIPT!"=="0" (
-        set /a TOTAL+=1
-        echo.
-        echo ----------------------------------------------------------------------
-        echo [!TOTAL!] Procesando: "%%~nxF"
-        
-        REM Verificar si existe pista de audio separada con el mismo nombre base (.m4a, .opus, .mp3, .ogg)
-        set "AUDIO_SRC="
-        if exist "%%~nF.m4a" set "AUDIO_SRC=%%~nF.m4a"
-        if not defined AUDIO_SRC if exist "%%~nF.opus" set "AUDIO_SRC=%%~nF.opus"
-        if not defined AUDIO_SRC if exist "%%~nF.mp3" set "AUDIO_SRC=%%~nF.mp3"
-        if not defined AUDIO_SRC if exist "%%~nF.ogg" set "AUDIO_SRC=%%~nF.ogg"
-        
-        if defined AUDIO_SRC (
-            echo  - [MULTIPLEXACION FORZADA] Se detecto pista de audio separada: "!AUDIO_SRC!"
-            echo  - Uniendo video + audio AAC Estereo para auto...
-            !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -i "!AUDIO_SRC!" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\\%%~nF.mp4"
-        ) else (
-            echo  - [RECODIFICACION DE AUDIO] Asegurando AAC Estereo y contenedor MP4 compatible...
-            !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\\%%~nF.mp4"
-        )
-        
-        if exist "${outDir}\\%%~nF.mp4" (
-            echo  [OK] Video reparado con audio garantizado en: "${outDir}\\%%~nF.mp4"
-            set /a REPAIRED+=1
-        ) else (
-            echo  [!] Error procesando este archivo.
-            set /a ERRORS+=1
-        )
+    set /a TOTAL+=1
+    echo [!TOTAL!] Procesando: "%%~nxF"
+
+    set "AUDIO_SRC="
+    if exist "%%~nF.m4a" set "AUDIO_SRC=%%~nF.m4a"
+    if not defined AUDIO_SRC if exist "%%~nF.opus" set "AUDIO_SRC=%%~nF.opus"
+    if not defined AUDIO_SRC if exist "%%~nF.mp3" set "AUDIO_SRC=%%~nF.mp3"
+    if not defined AUDIO_SRC if exist "%%~nF.ogg" set "AUDIO_SRC=%%~nF.ogg"
+
+    if defined AUDIO_SRC (
+        !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -i "!AUDIO_SRC!" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\%%~nF.mp4"
+    ) else (
+        !FFMPEG_CMD! -y -hide_banner -loglevel warning -i "%%~nxF" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "${outDir}\%%~nF.mp4"
+    )
+
+    if exist "${outDir}\%%~nF.mp4" (
+        echo  [OK] "${outDir}\%%~nF.mp4"
+        set /a REPAIRED+=1
+    ) else (
+        echo  [!] Error al procesar "%%~nxF"
+        set /a ERRORS+=1
     )
 )
 
 echo.
 echo ==============================================================================
-echo                          INFORME FINAL DE REPARACION
+echo   COMPLETADO: !REPAIRED! de !TOTAL! videos listos en "${outDir}" (Errores: !ERRORS!)
 echo ==============================================================================
-echo Videos analizados : !TOTAL!
-echo Videos reparados  : !REPAIRED! (Con audio AAC Estereo 100%% compatible con autos)
-echo Errores           : !ERRORS!
-echo.
-echo Los videos listos para tu vehiculo estan en la carpeta:
-echo   "%CD%\\${outDir}"
-echo.
-echo Puedes copiarlos directamente a tu memoria USB o reproducirlos en el simulador.
-echo ==============================================================================
-echo.
 pause
 `;
 }
 
 /**
- * Generates an automated 1-click macOS / Linux .SH script to repair all video files
- * in a folder with guaranteed FFmpeg verification and AAC audio transcoding.
+ * Generates a macOS / Linux .SH script to repair all videos in a folder to AAC stereo MP4.
  */
 export function generateFolderRepairSh(options?: FolderRepairScriptOptions): string {
-  const outDir = options?.outputFolder || 'Reparados_Para_Auto';
+  const outDir =
+    (options?.outputFolder || 'Reparados_Para_Auto').replace(/[^\w-]/g, '_') ||
+    'Reparados_Para_Auto';
   const bitrate = options?.audioBitrate || '192k';
   const sampleRate = options?.sampleRate || 48000;
 
   return `#!/usr/bin/env bash
-# ==============================================================================
-#   REPARADOR AUTOMÁTICO DE VIDEOS Y AUDIO PARA ESTÉREOS DE AUTO (MAC / LINUX)
-#   Multiplexa audio separado (.m4a/.opus) y recodifica Opus/Vorbis a AAC Estéreo
-# ==============================================================================
 set -e
 
 OUT_DIR="${outDir}"
 mkdir -p "$OUT_DIR"
 
-echo "=============================================================================="
-echo "    REPARADOR AUTOMÁTICO DE VIDEOS PARA PANTALLAS DE AUTO (MAC / LINUX)"
-echo "    Destino: ./$OUT_DIR"
-echo "=============================================================================="
-echo ""
-
 if ! command -v ffmpeg &> /dev/null; then
-    echo "[1/2] FFmpeg no detectado en el sistema. Instalando..."
     if command -v brew &> /dev/null; then
         brew install ffmpeg
     elif command -v apt-get &> /dev/null; then
         sudo apt-get update && sudo apt-get install -y ffmpeg
     else
-        echo "[!] Por favor instala FFmpeg con: brew install ffmpeg"
+        echo "Instala FFmpeg (brew install ffmpeg) y vuelve a ejecutar."
         exit 1
     fi
-else
-    echo "[OK] FFmpeg detectado en el sistema."
 fi
 
-echo ""
-echo "[2/2] Escaneando y reparando archivos de video..."
-count=0
 repaired=0
-
 for f in *.{mp4,webm,mkv,m4v,avi,ts}; do
     [ -f "$f" ] || continue
-    count=$((count+1))
     base="\${f%.*}"
-    echo "------------------------------------------------------------------------------"
-    echo "[$count] Procesando: $f"
-    
+    echo "Procesando: $f"
     if [ -f "$base.m4a" ]; then
-        echo " - [MULTIPLEXACIÓN] Detectado archivo de audio separado: $base.m4a"
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -i "$base.m4a" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     elif [ -f "$base.opus" ]; then
-        echo " - [MULTIPLEXACIÓN] Detectado archivo de audio separado: $base.opus"
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -i "$base.opus" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     elif [ -f "$base.mp3" ]; then
-        echo " - [MULTIPLEXACIÓN] Detectado archivo de audio separado: $base.mp3"
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -i "$base.mp3" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     else
-        echo " - [RECODIFICACIÓN] Asegurando pista AAC Estéreo y contenedor MP4..."
         ffmpeg -y -hide_banner -loglevel warning -i "$f" -c:v copy -c:a aac -b:a ${bitrate} -ar ${sampleRate} -movflags +faststart "$OUT_DIR/$base.mp4"
     fi
-    
-    if [ -f "$OUT_DIR/$base.mp4" ]; then
-        echo " [OK] Guardado en: $OUT_DIR/$base.mp4"
-        repaired=$((repaired+1))
-    fi
+    [ -f "$OUT_DIR/$base.mp4" ] && repaired=$((repaired+1))
 done
 
-echo ""
-echo "=============================================================================="
-echo "  [FINALIZADO] $repaired videos reparados con audio garantizado en: $OUT_DIR"
-echo "=============================================================================="
+echo "Listo: $repaired videos reparados en ./$OUT_DIR"
 `;
 }
 
+export interface YoutubeDownloadScriptOptions {
+  input: string;
+  isPlaylist: boolean;
+  resolution: '720p' | '1080p' | '480p' | 'Sin verificar';
+  targetFolder: string;
+  includeTrackPrefix: boolean;
+  organizeInSubfolder: boolean;
+}
+
+const RESOLUTION_HEIGHT_MAP: Record<YoutubeDownloadScriptOptions['resolution'], string> = {
+  '1080p': '1080',
+  '720p': '720',
+  '480p': '480',
+  'Sin verificar': '720',
+};
+
+function quoteBashArg(value: string): string {
+  const singleLine = value.replace(/[\r\n]+/g, ' ').trim();
+  return `'${singleLine.replaceAll("'", String.raw`'\''`)}'`;
+}
+
+function quoteBatchArg(value: string): string {
+  const safe = value
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .replaceAll('"', "'")
+    .replaceAll('%', '%%')
+    .replace(/\\+$/, (match) => `${match}${match}`);
+  return `"${safe}"`;
+}
+
 /**
- * Generates an automated 1-click Windows .BAT script to download a SINGLE video
- * with guaranteed FFmpeg installation and FORCED AAC audio multiplexing.
+ * Generates unified Windows (.bat), macOS/Linux (.sh), and single-line yt-dlp scripts
+ * for either a single video/search or a full playlist with H.264 + AAC car compatibility.
  */
-export function generateSingleVideoDownloadBat(
-  videoUrl: string,
-  title: string,
-  resolution: string = '720p'
-): string {
-  const height = resolution === '1080p' ? '1080' : '720';
-  const cleanTitle = title.replace(/[^\w\s\u00C0-\u024F]/gi, '').trim() || 'Video_Musical';
-  const safeFilename = `${cleanTitle} (${resolution}).mp4`;
+export function generateYoutubeDownloadScript(options: YoutubeDownloadScriptOptions): {
+  windowsBat: string;
+  macSh: string;
+  singleLineCommand: string;
+  resolvedTarget: string;
+} {
+  const height = RESOLUTION_HEIGHT_MAP[options.resolution] || '720';
+  const safeFolder =
+    (options.targetFolder || 'USB_Musica_Auto').replace(/[^\w-]/g, '_') || 'USB_Musica_Auto';
+  const normalizedInput = options.input.replace(/[\r\n]+/g, ' ').trim();
+  const isUrl = /^https?:\/\//i.test(normalizedInput);
+  const searchCount = options.isPlaylist ? '15' : '1';
+  const searchQuery = normalizedInput || 'Carlos Vives La Gota Fria';
+  const resolvedTarget = isUrl ? normalizedInput : `ytsearch${searchCount}:${searchQuery}`;
 
-  return `@echo off
+  const bashQuotedTarget = quoteBashArg(resolvedTarget);
+  const batchQuotedTarget = quoteBatchArg(resolvedTarget);
+
+  const playlistFlag = options.isPlaylist ? '--yes-playlist' : '--no-playlist';
+  const formatFilter = `bestvideo[vcodec^=avc1][height<=${height}]+bestaudio[acodec^=mp4a]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best[height<=${height}][ext=mp4]/best`;
+
+  const buildTemplate = (forBat: boolean) => {
+    const p = forBat ? '%%' : '%';
+    const prefix = options.isPlaylist && options.includeTrackPrefix ? `${p}(playlist_index)02d - ` : '';
+    const sub = options.isPlaylist && options.organizeInSubfolder ? `${p}(playlist_title)s/` : '';
+    return `${safeFolder}/${sub}${prefix}${p}(title)s.${p}(ext)s`;
+  };
+
+  const singleLineCommand = `yt-dlp ${playlistFlag} -f "${formatFilter}" --merge-output-format mp4 --remux-video mp4 --postprocessor-args "ffmpeg:-c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart" --windows-filenames --no-mtime --continue --ignore-errors -o "${buildTemplate(false)}" ${bashQuotedTarget}`;
+
+  const windowsBat = `@echo off
 chcp 65001 >nul
-title Descargador Automotriz de Video Único con Audio Garantizado (H.264 + AAC)
+title CarVideo USB Studio - Descargador MP4 para Auto (${options.resolution})
 cls
-echo ==============================================================================
-echo     DESCARGADOR DE VIDEO INDIVIDUAL PARA AUTO (AUDIO GARANTIZADO)
-echo     Video: MP4 (H.264 Max ${resolution})  -  Audio: AAC Estéreo 192k (Multiplexado)
-echo ==============================================================================
-echo.
-echo Titulo : "${cleanTitle}"
-echo URL    : "${videoUrl}"
+echo ===================================================================
+echo   DESCARGADOR AUTOMOTRIZ YT-DLP + FFMPEG (H.264 + AAC ESTEREO)
+echo   Destino: "${safeFolder}"  -  Calidad: ${options.resolution}
+echo ===================================================================
 echo.
 
-REM 1. Verificar o descargar yt-dlp.exe
 where yt-dlp >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
     if not exist "yt-dlp.exe" (
-        echo [1/3] Descargando motor de descarga yt-dlp...
+        echo [1/2] Descargando yt-dlp.exe...
         curl -L -o yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
-    )
-)
-set YTDLP_CMD=yt-dlp
-if exist "yt-dlp.exe" set YTDLP_CMD=yt-dlp.exe
-
-REM 2. Verificar o instalar FFmpeg garantizado
-set FFMPEG_OPT=
-where ffmpeg >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-    echo [2/3] FFmpeg detectado en el sistema.
-) else (
-    if exist "ffmpeg.exe" (
-        echo [2/3] ffmpeg.exe detectado localmente.
-        set FFMPEG_OPT=--ffmpeg-location .
-    ) else (
-        echo [2/3] Configurando FFmpeg portable para multiplexacion de audio...
-        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-            "$ProgressPreference = 'SilentlyContinue'; " ^
-            "try { " ^
-            "    Invoke-WebRequest -Uri 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile 'ffmpeg_dl.zip' -UseBasicParsing; " ^
-            "    Expand-Archive -Path 'ffmpeg_dl.zip' -DestinationPath 'ffmpeg_temp' -Force; " ^
-            "    $f = Get-ChildItem -Path 'ffmpeg_temp' -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1; " ^
-            "    if ($f) { Copy-Item $f.FullName -Destination 'ffmpeg.exe'; Remove-Item 'ffmpeg_dl.zip' -Force; Remove-Item 'ffmpeg_temp' -Recurse -Force; exit 0 } " ^
-            "} catch {}"
-        if exist "ffmpeg.exe" (
-            set FFMPEG_OPT=--ffmpeg-location .
-            echo       [OK] FFmpeg portable configurado!
-        ) else (
-            curl -L -o ffmpeg.exe "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64" 2>nul
-            if exist "ffmpeg.exe" set FFMPEG_OPT=--ffmpeg-location .
+        if not exist "yt-dlp.exe" (
+            echo [!] No se pudo descargar yt-dlp.exe. Verifica tu conexion.
+            pause
+            exit /b 1
         )
     )
 )
 
-echo.
-echo [3/3] Descargando y forzando multiplexacion de video + audio AAC Estereo...
-echo.
+set "YTDLP_CMD=yt-dlp"
+if exist "yt-dlp.exe" set "YTDLP_CMD=yt-dlp.exe"
 
-%YTDLP_CMD% ^
-  --format "bestvideo[vcodec^=avc1][height<=${height}]+bestaudio[acodec^=mp4a]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best[height<=${height}][ext=mp4]/best" ^
+${WINDOWS_FFMPEG_INSTALL_BLOCK}
+
+if not exist "${safeFolder}" mkdir "${safeFolder}"
+echo.
+echo Descargando y uniendo audio AAC para auto...
+
+%YTDLP_CMD% ${playlistFlag} ^
+  --format "${formatFilter}" ^
   --merge-output-format mp4 ^
   --remux-video mp4 ^
   --postprocessor-args "ffmpeg:-c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart" ^
   %FFMPEG_OPT% ^
   --windows-filenames ^
   --no-mtime ^
-  --output "${safeFilename}" ^
-  "${videoUrl}"
+  --continue ^
+  --ignore-errors ^
+  --output "${buildTemplate(true)}" ^
+  ${batchQuotedTarget}
 
 echo.
-echo ==============================================================================
-echo   [COMPLETADO] ARCHIVO LISTO CON AUDIO GARANTIZADO: "${safeFilename}"
-echo   Puedes copiarlo directamente a tu memoria USB o probarlo en el simulador.
-echo ==============================================================================
-echo.
+echo ===================================================================
+echo   [LISTO] Videos guardados en "${safeFolder}" con audio AAC!
+echo ===================================================================
 pause
 `;
-}
 
+  const macSh = String.raw`#!/usr/bin/env bash
+set -e
+mkdir -p "${safeFolder}"
+
+if ! command -v yt-dlp &> /dev/null; then
+    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./yt-dlp
+    chmod a+rx ./yt-dlp
+    YTDLP_CMD="./yt-dlp"
+else
+    YTDLP_CMD="yt-dlp"
+fi
+
+if ! command -v ffmpeg &> /dev/null && command -v brew &> /dev/null; then
+    brew install ffmpeg
+fi
+
+$YTDLP_CMD ${playlistFlag} \
+  --format "${formatFilter}" \
+  --merge-output-format mp4 \
+  --remux-video mp4 \
+  --postprocessor-args "ffmpeg:-c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart" \
+  --windows-filenames \
+  --no-mtime \
+  --continue \
+  --ignore-errors \
+  --output "${buildTemplate(false)}" \
+  ${bashQuotedTarget}
+
+echo "[LISTO] Videos guardados en ./${safeFolder}"
+`;
+
+  return {
+    windowsBat,
+    macSh,
+    singleLineCommand,
+    resolvedTarget,
+  };
+}

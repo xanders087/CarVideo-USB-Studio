@@ -6,51 +6,34 @@ El propósito principal de esta herramienta es garantizar que los archivos multi
 
 ## 🌟 Funcionalidades Principales
 
-La aplicación se divide en diferentes áreas o pestañas, cada una enfocada en una etapa específica del proceso:
+La aplicación sigue un flujo directo de 3 pasos, acompañado de herramientas de diagnóstico y reparación:
 
-- **Descargas Web (Web Downloader):** Un centro principal para buscar, obtener y preparar videos desde la web.
-- **Cola USB (USB Staging):** Una bandeja de preparación donde puedes encolar y organizar los videos que deseas exportar antes de transferirlos a tu dispositivo USB.
-- **Consola de Auto (Car Cockpit Mode):** Un simulador de sistema de infoentretenimiento de automóvil que te permite previsualizar y diagnosticar cómo se verán y escucharán los videos en la pantalla de un vehículo real.
-- **Gestor USB (USB Manager):** Herramienta para organizar tus videos, gestionar listas de reproducción (playlists) y preparar la estructura de archivos final para exportar a la memoria flash USB.
-- **Reparación de Audio en Carpetas:** Una solución de un clic para reparar problemas comunes de audio y asegurar la compatibilidad.
-- **Soporte de Temas:** Interfaz de usuario adaptable con modo claro y oscuro.
+1. **1. Añadir videos:**
+   - **YouTube (Script PC):** Un único generador de scripts `yt-dlp + FFmpeg` (`.bat` para Windows, `.sh` para Mac/Linux o comando de terminal) que detecta automáticamente enlaces de video individual, playlists o búsquedas y garantiza video **H.264 + audio AAC**.
+   - **Buscar gratis (Internet Archive):** Búsqueda directa de videos y conciertos MP4 de dominio público listos para añadir a tu USB o probar.
+   - **Importar MP4:** Carga por clic o arrastrar y soltar archivos locales con análisis de encabezados MP4 y detección automática de pistas sin audio o códecs Opus/Vorbis incompatibles.
+2. **2. Mi USB:**
+   - Lista unificada con cálculo de espacio ocupado (referencia USB 16 GB), organización por carpetas de género o modo plano (raíz FAT32), vista previa del árbol de carpetas, alertas de compatibilidad, descarga individual MP4 y exportación en paquete **ZIP** (incluyendo listas `.m3u`).
+3. **3. Probar en el auto:**
+   - Simulador de consola automotriz (modo Día/Noche, pantalla completa y cola de reproducción) para verificar reproducción, imagen, pista de audio e inspección detallada antes de copiar a la memoria USB.
+- **Reparar audio (1-Clic):** Modal accesible desde la cabecera o desde cualquier aviso de audio incompatible para generar el script `FFmpeg` que convierte videos mudos o con Opus/Vorbis a MP4 H.264 + AAC Estéreo.
+- **Marco Legal y Copia Privada:** Accesible desde el pie de página junto con el inspector de licencia por pista.
+- **Soporte de Temas:** Interfaz adaptable con modo oscuro y modo claro.
 
 ## 📖 Guía de Uso
 
-El flujo de trabajo recomendado para utilizar **CarVideo USB Studio** es el siguiente:
-
-1. **Búsqueda y Selección:** Ve a la pestaña de **Descargas Web** y explora o añade los videos que deseas preparar para tu automóvil.
-2. **Preparación (Staging):** Añade los videos seleccionados a la **Cola USB**. En esta sección podrás revisar qué archivos están listos para ser procesados.
-3. **Previsualización:** Utiliza la **Consola de Auto** para reproducir los videos en un entorno simulado de vehículo. Esto te asegura de que tanto el video y el audio funcionarán sin problemas.
-4. **Organización y Exportación:** Dirígete al **Gestor USB** para crear listas de reproducción, organizar tu biblioteca y finalmente exportar los archivos optimizados directamente a tu memoria USB.
-5. **Verificación Legal:** En cualquier momento, puedes consultar la pestaña de **Marco Legal y Copia Privada** para revisar las licencias de uso y normativas aplicables.
-
-## 🛠️ Para Desarrolladores y Contribuciones
-
-Si eres desarrollador, ¡tus aportes son bienvenidos! La aplicación es un proyecto colaborativo y estamos abiertos a mejoras, correcciones de errores y nuevas funcionalidades.
-
-Para contribuir al proyecto:
-1. Revisa el código fuente para familiarizarte con la arquitectura (basada en React y TypeScript).
-2. Identifica el área donde deseas aportar (ej. mejoras en la interfaz, optimización del procesamiento de video, nuevas simulaciones para la consola del auto).
-3. Asegúrate de seguir las buenas prácticas y patrones ya establecidos en la base de código.
-4. Envía tus Pull Requests o contribuciones a través del repositorio para su revisión.
-
-*(Nota: Este documento tiene un propósito descriptivo. Para detalles técnicos de instalación y ejecución local, los desarrolladores pueden guiarse por las dependencias y scripts definidos en el archivo `package.json`).*
+1. **Añadir videos:** Genera tu script para PC, busca videos abiertos en Archive.org o importa los MP4 de tu computadora.
+2. **Organizar Mi USB:** Elige carpetas por género o modo plano, revisa la estructura y descarga tu `.ZIP` (o cada `.mp4` por separado).
+3. **Probar en el auto:** Verifica que tus videos reproduzcan con audio AAC válido en la consola simulada antes de llevar la memoria al vehículo.
 
 ## 💻 Tecnologías Utilizadas
 
-La aplicación está construida utilizando tecnologías web modernas:
-- **React:** Biblioteca principal para la construcción de la interfaz de usuario.
-- **Vite:** Entorno de desarrollo rápido y empaquetador de módulos.
-- **Tailwind CSS:** Framework de estilos para un diseño responsivo y adaptable (incluyendo soporte nativo para temas claro/oscuro).
-- **TypeScript:** Superset de JavaScript que añade tipado estático, proporcionando un código robusto y seguro.
-- **Lucide React:** Colección de iconos ligeros y personalizables utilizados en toda la aplicación.
+- **React 19 + TypeScript**
+- **Vite + Tailwind CSS**
+- **Express** (servidor API para búsqueda en Archive.org y descarga directa de muestras)
+- **JSZip** y **Lucide React**
 
 ## ⚖️ Licencias y Marco Legal
 
-CarVideo USB Studio incluye una sección dedicada a la transparencia legal.
-Dentro de la aplicación, en la pestaña de **Marco Legal y Copia Privada**, así como en el **Inspector de Licencias**, puedes encontrar detalles sobre:
-- Los derechos de autor y distribución aplicables a los videos gestionados.
-- Las regulaciones sobre el uso personal y copias privadas de archivos multimedia descargados.
+Consulta en cualquier momento **Marco Legal y Copia Privada** desde el enlace del pie de página o haciendo clic en la etiqueta de licencia dentro de la consola del auto para revisar las condiciones de uso personal y licencias abiertas.
 
-Asegúrate de respetar siempre los derechos de propiedad intelectual de los creadores y utilizar esta herramienta estrictamente de acuerdo con las normativas locales vigentes sobre descargas y uso de contenido multimedia para fines privados.
